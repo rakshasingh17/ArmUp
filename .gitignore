@@ -1,0 +1,10 @@
+__pycache__/
+backend/__pycache__/
+*.pyc
+armup.db
+backend/armup.db
+pose_landmarker_lite.task
+backend/pose_landmarker_lite.task
+node_modules/
+dist/
+.env
