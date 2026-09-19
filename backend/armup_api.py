@@ -14,11 +14,14 @@ interactive Swagger page there, so Bhakti/Arya can try every endpoint
 in the browser without asking you how to call it.
 """
 from typing import List, Optional
+import subprocess
+import sys
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 import armup_db as db_layer
+from armup_engine import EXERCISES
 
 app = FastAPI(title="ArmUp API")
 
@@ -171,3 +174,21 @@ def get_user_sessions(user_id: int):
         )
         for s in history
     ]
+
+
+@app.post("/start-session")
+def start_session(user_id: int = 1, exercise_key: str = "curl"):
+    """Launches armup_app.py (the webcam engine) as a separate process,
+    pre-filled with the given user and exercise -- called by the
+    dashboard's 'Start Exercise' button."""
+    if exercise_key not in EXERCISES:
+        raise HTTPException(status_code=400, detail=f"Unknown exercise_key: {exercise_key}")
+    if not db_layer.get_user(next(get_db()), user_id):
+        raise HTTPException(status_code=404, detail="User not found")
+
+    subprocess.Popen([
+        sys.executable, "armup_app.py",
+        "--user", str(user_id),
+        "--exercise", exercise_key,
+    ])
+    return {"status": "started", "user_id": user_id, "exercise_key": exercise_key}

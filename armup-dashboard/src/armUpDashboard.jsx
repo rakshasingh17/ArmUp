@@ -36,6 +36,16 @@ export default function ArmUpDashboard() {
     }
   };
 
+  const startExercise = async (exerciseKey) => {
+    try {
+      await fetch(`${API_BASE}/start-session?user_id=${userId}&exercise_key=${exerciseKey}`, {
+        method: "POST",
+      });
+    } catch (err) {
+      console.error("Could not start session:", err);
+    }
+  };
+
   const totalReps = sessions.reduce((acc, s) => acc + s.reps, 0);
   const totalScore = sessions.reduce((acc, s) => acc + s.score, 0);
   const avgAccuracy = sessions.length 
@@ -144,9 +154,12 @@ export default function ArmUpDashboard() {
                         Start Tolerance: <span className="font-mono text-slate-300">{item.starting_tolerance}°</span>
                       </p>
                     </div>
-                    <div className="p-2 rounded-lg bg-cyan-500/10 text-cyan-400 group-hover:bg-cyan-500 group-hover:text-black transition-all">
+                    <button
+                      onClick={() => startExercise(item.key)}
+                      className="p-2 rounded-lg bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500 hover:text-black transition-all cursor-pointer"
+                    >
                       <Play size={16} />
-                    </div>
+                    </button>
                   </div>
                 ))
               ) : (

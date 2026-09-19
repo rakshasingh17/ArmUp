@@ -41,11 +41,48 @@ CHANGE LOG (backend integration):
   best-effort call -- if the backend isn't running, the app prints a
   message and continues normally rather than crashing. No engine or
   rendering logic was touched to add this.
+
+CHANGE LOG (dashboard launch support):
+- Added --user / --exercise CLI args so the dashboard's "Start Exercise"
+  button can launch this script non-interactively (via the API's
+  /start-session endpoint) without it blocking on a terminal input()
+  prompt. Manual double-click / terminal launches still work exactly as
+  before -- if no --user is passed, it falls back to the same input()
+  prompt as always.
+
+CHANGE LOG (per-exercise session saving):
+- Previously, switching exercises mid-run (pressing 1/2/3/4) kept
+  accumulating reps/score/streak into the SAME SessionState, and only
+  ONE save happened at quit -- for whatever exercise was active at that
+  moment. Everything done on other exercises during that run was silently
+  lost. Now, switching exercises triggers a save of the just-finished
+  exercise's stats (if it logged any reps) via save_session_to_backend(),
+  then calls the engine's new session.reset_stats() so the next exercise
+  starts from a clean reps=0/score=0 slate. Quitting still saves whatever
+  exercise is active at that point, same as before -- so a full multi-
+  exercise run now produces one saved session per exercise, instead of
+  one merged/overwritten session for the whole run.
+
+CHANGE LOG (flappy game removed):
+- The neck_tilt "flappy owl" mini-game (armup_flappy.FlappyGame) has been
+  removed entirely -- the import, the flappy.update()/set_vertical_control()/
+  flap()/draw()/reset()/start() calls, and the "vertical control" derivation
+  from nose height are all gone. Reason: MediaPipe pose detection + the
+  smoothing filter + the HOLD_FRAMES_REQUIRED debounce together add roughly
+  200-300ms of unavoidable latency, which made the fast-reaction obstacle
+  game feel unresponsive/unfair (you'd already be too late by the time the
+  game registered a tilt). neck_tilt is now a plain exercise like curl/
+  raise/press -- same skeleton drawing, same NECK_BASE/VERTICAL_REF/NOSE
+  angle fed into the engine, same rep/score/streak/accuracy tracking, same
+  per-exercise save-on-switch -- it just no longer drives a game canvas.
+  Gamification for neck_tilt is deferred to a future phase; armup_flappy.py
+  itself was left untouched on disk in case it's revisited later.
 """
 
 import os
 os.environ["GLOG_minloglevel"] = "2"
 
+import argparse
 import cv2
 import mediapipe as mp
 import numpy as np
@@ -58,7 +95,11 @@ from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 
 from armup_engine import SessionState, EXERCISES, angle_at, MIN_VISIBILITY
-from armup_flappy import FlappyGame
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--user", type=int, default=None)
+parser.add_argument("--exercise", type=str, default=None)
+args = parser.parse_args()
 
 # ---------- Backend integration ----------
 API_URL = "http://localhost:8000"
@@ -166,13 +207,17 @@ FRAME_W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 640
 FRAME_H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 480
 
 # ---------- User identity (backend integration) ----------
-# No login UI exists yet, so we ask for a numeric user id in the
-# terminal before the webcam window opens. This id should come from
-# POST /users (Swagger /docs), and defaults to 1 if left blank.
-try:
-    USER_ID = int(input("Enter your user id (from POST /users, e.g. 1): ") or "1")
-except ValueError:
-    USER_ID = 1
+# If launched with --user (e.g. by the dashboard's Start Exercise button
+# via the API's /start-session endpoint), skip the terminal prompt
+# entirely -- it would otherwise block forever with no one there to type
+# into it. Manual runs (no --user passed) keep the original prompt.
+if args.user is not None:
+    USER_ID = args.user
+else:
+    try:
+        USER_ID = int(input("Enter your user id (from POST /users, e.g. 1): ") or "1")
+    except ValueError:
+        USER_ID = 1
 
 COLOR_BG = (53, 16, 27)        # #1B1035 -> matches Arya's --bg1
 COLOR_LIMB = (208, 224, 63)    # #3FE0D0 cyan -> Arya's connector color
@@ -435,16 +480,15 @@ if not show_launch_screen():
     cv2.destroyAllWindows()
     raise SystemExit
 
-session = SessionState(exercise_key="curl")
+initial_exercise = args.exercise if args.exercise in EXERCISES else "curl"
+session = SessionState(exercise_key=initial_exercise)
 feedback_flash = None
-flappy = FlappyGame(width=310, height=230)
 last_frame_time = time.time()
 start_time = time.time()
 key_to_exercise = {ord('1'): "curl", ord('2'): "raise", ord('3'): "press", ord('4'): "neck_tilt"}
 
 while cap.isOpened():
     now = time.time()
-    flappy.update(now - last_frame_time)
     last_frame_time = now
     success, frame = cap.read()
     if not success:
@@ -517,25 +561,8 @@ while cap.isOpened():
 
         tracking_ok = min(frame_vis[n1], frame_vis[n2], frame_vis[n3]) > MIN_VISIBILITY
 
-        # Exercise 4 uses the nose height relative to the shoulder midpoint
-        # as direct, smoothed vertical control. This signed signal is kept
-        # separate from angle_at(), which remains unsigned for rep validation.
-        if session.exercise_key == "neck_tilt":
-            shoulder_width = max(40.0, abs(rs[0] - ls[0]))
-            # In an upright neutral pose the nose is roughly one shoulder-width
-            # above the shoulder midpoint. Subtract that neutral offset so the
-            # game starts centered instead of interpreting neutral posture as
-            # an extreme downward or upward command.
-            neutral_nose_y = neck_base[1] - shoulder_width
-            vertical_control = (frame_points["NOSE"][1] - neutral_nose_y) / (shoulder_width * 0.85)
-            flappy.set_vertical_control(float(np.clip(vertical_control, -1.0, 1.0)))
-        else:
-            flappy.set_vertical_control(0.0)
-
         feedback = session.update(live_angle, landmarks_visible=tracking_ok)
         if feedback["event"] == "rep_complete":
-            if session.exercise_key == "neck_tilt":
-                flappy.flap()
             feedback_flash = {"text": feedback["message"], "until": time.time() + 1.0}
 
         angle_color = (200, 200, 200) if tracking_ok else (94, 193, 255)
@@ -549,8 +576,6 @@ while cap.isOpened():
     # Pose demo card shows regardless of whether a person is detected yet,
     # so it's visible even before you step into frame.
     draw_pose_hint(canvas, w - 244, 60, time.time(), session.exercise_key)
-    if session.exercise_key == "neck_tilt":
-        flappy.draw(canvas, w - 324, 165)
     draw_accuracy_ring(canvas, session, w - 60, canvas.shape[0] - 80)
 
     canvas = draw_hud_pil(canvas, session, feedback_flash, tracking_ok)
@@ -559,12 +584,14 @@ while cap.isOpened():
     key = cv2.waitKey(5) & 0xFF
     if key == ord('q'):
         break
-    if key in key_to_exercise:
-        previous_exercise = session.exercise_key
+    if key in key_to_exercise and key_to_exercise[key] != session.exercise_key:
+        # Save the exercise we're leaving BEFORE switching, so its reps/
+        # score/streak aren't lost or overwritten by the next exercise.
+        # save_session_to_backend() already no-ops on reps == 0, so
+        # switching before doing any reps on the current exercise is safe.
+        save_session_to_backend(USER_ID, session)
         session.set_exercise(key_to_exercise[key])
-        if session.exercise_key == "neck_tilt" and previous_exercise != "neck_tilt":
-            flappy.reset()
-            flappy.start()
+        session.reset_stats()
 
 save_session_to_backend(USER_ID, session)
 cap.release()

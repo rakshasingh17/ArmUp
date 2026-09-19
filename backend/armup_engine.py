@@ -28,6 +28,17 @@ CHANGE LOG (new exercise: neck_tilt):
   different triangle (see armup_app.py for how the vertex points are
   built, since the "neck base" and "vertical reference" points aren't
   raw MediaPipe landmarks -- they're derived in the interface layer).
+
+CHANGE LOG (reset_stats for per-exercise session saving):
+- Added reset_stats(), separate from set_exercise(). set_exercise() only
+  ever reset the rep-state machine (rep_state/_peak_hold/_rest_hold) --
+  it deliberately left reps/score/streak/max_streak/level/hit_log alone,
+  since originally one SessionState was meant to persist for a whole
+  run regardless of exercise switches. The interface layer (armup_app.py)
+  now saves+resets stats on every exercise switch instead, so
+  reset_stats() gives it a clean way to zero out just the accumulated
+  counters without touching exercise_key or the rep-state machine (that
+  still gets reset by set_exercise() as before).
 """
 
 import math
@@ -123,6 +134,23 @@ class SessionState:
             self.rep_state = "rest"
             self._peak_hold = 0
             self._rest_hold = 0
+
+    def reset_stats(self):
+        """Zeroes out the accumulated scoring counters (reps, score,
+        streak, max_streak, level, hit_log) without touching exercise_key
+        or the rep-state machine. Intended for callers that want to save
+        off the current exercise's stats and then start the next exercise
+        from a clean slate -- e.g. armup_app.py calls this right after
+        save_session_to_backend() + set_exercise() when the person
+        switches exercises mid-run, so each exercise gets its own
+        independent, correctly-attributed saved session instead of one
+        merged blob."""
+        self.score = 0
+        self.reps = 0
+        self.streak = 0
+        self.max_streak = 0
+        self.level = 1
+        self.hit_log = []
 
     def update(self, live_angle, landmarks_visible=True):
         """
@@ -237,3 +265,16 @@ if __name__ == "__main__":
         if feedback["event"] == "rep_complete":
             print(f"Neck tilt {neck.reps} complete! {feedback['message']}")
     print(f"Neck tilt reps counted: {neck.reps} (should be 2)")
+
+    print("\n--- reset_stats test (switch exercise mid-run) ---")
+    multi = SessionState(exercise_key="curl")
+    for angle in fake_angle_sequence:
+        multi.update(angle)
+    print(f"After curls: reps={multi.reps}, score={multi.score}")
+    multi.set_exercise("neck_tilt")
+    multi.reset_stats()
+    print(f"After switch+reset: reps={multi.reps}, score={multi.score}, "
+          f"exercise_key={multi.exercise_key} (reps/score should be 0, key should be neck_tilt)")
+    for angle in fake_neck_sequence:
+        multi.update(angle)
+    print(f"After neck tilts: reps={multi.reps} (should be 2, not mixed with curl reps)")
