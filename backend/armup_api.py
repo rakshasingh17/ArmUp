@@ -16,9 +16,10 @@ in the browser without asking you how to call it.
 from typing import List, Optional
 import subprocess
 import sys
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 import armup_db as db_layer
 from armup_engine import EXERCISES
@@ -40,6 +41,8 @@ _seed_session = db_layer.SessionLocal()
 db_layer.seed_all(_seed_session)
 _seed_session.close()
 
+MIN_PASSWORD_LEN = 6  # keep in sync with SignupPage.jsx
+
 
 def get_db():
     db = db_layer.SessionLocal()
@@ -54,13 +57,25 @@ def get_db():
 # ---------------------------------------------------------------
 class CreateUserRequest(BaseModel):
     name: str
-    ailment_tags: Optional[List[str]] = []
+    password: str
+    ailment_tags: List[str] = []
+
+
+class LoginRequest(BaseModel):
+    name: str
+    password: str
 
 
 class UserResponse(BaseModel):
     id: int
     name: str
     ailment_tags: List[str]
+
+
+class ConditionResponse(BaseModel):
+    tag: str
+    label: str
+    exercises: List[str]
 
 
 class ExerciseResponse(BaseModel):
@@ -99,16 +114,56 @@ def health_check():
     return {"status": "ok", "service": "armup-api"}
 
 
+@app.get("/conditions", response_model=List[ConditionResponse])
+def list_conditions(db: Session = Depends(get_db)):
+    """Conditions offered in the signup dropdown, each with the exercises
+    it prescribes. Comes straight from ailment_exercise_map."""
+    return [ConditionResponse(**c) for c in db_layer.list_conditions(db)]
+
+
 @app.post("/users", response_model=UserResponse)
-def create_user(req: CreateUserRequest, db=None):
-    db = next(get_db())
-    user = db_layer.create_user(db, req.name, req.ailment_tags)
+def create_user(req: CreateUserRequest, db: Session = Depends(get_db)):
+    """Signup. The prescribed plan isn't stored separately -- it's derived
+    from the user's ailment_tags via ailment_exercise_map, so picking
+    conditions here is what creates the plan."""
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Please enter your name.")
+    if len(req.password) < MIN_PASSWORD_LEN:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Password must be at least {MIN_PASSWORD_LEN} characters.",
+        )
+
+    tags = list(dict.fromkeys(req.ailment_tags))  # drop duplicates, keep order
+    if not tags:
+        raise HTTPException(status_code=400, detail="Select at least one condition.")
+    valid_tags = {c["tag"] for c in db_layer.list_conditions(db)}
+    unknown = [t for t in tags if t not in valid_tags]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Unknown condition: {unknown[0]}")
+
+    if db_layer.get_user_by_name(db, name):
+        raise HTTPException(
+            status_code=409,
+            detail="That name is already taken. Choose another, or log in if it's yours.",
+        )
+
+    user = db_layer.create_user(db, name, tags, req.password)
+    return UserResponse(id=user.id, name=user.name, ailment_tags=user.tags())
+
+
+@app.post("/login", response_model=UserResponse)
+def login(req: LoginRequest, db: Session = Depends(get_db)):
+    user = db_layer.authenticate(db, req.name, req.password)
+    if not user:
+        # Same message for "no such name" and "wrong password" on purpose.
+        raise HTTPException(status_code=401, detail="Incorrect name or password.")
     return UserResponse(id=user.id, name=user.name, ailment_tags=user.tags())
 
 
 @app.get("/users/{user_id}", response_model=UserResponse)
-def get_user(user_id: int):
-    db = next(get_db())
+def get_user(user_id: int, db: Session = Depends(get_db)):
     user = db_layer.get_user(db, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -116,17 +171,15 @@ def get_user(user_id: int):
 
 
 @app.get("/exercises", response_model=List[ExerciseResponse])
-def list_all_exercises():
+def list_all_exercises(db: Session = Depends(get_db)):
     """All available exercises -- for a generic exercise picker screen."""
-    db = next(get_db())
     return [ExerciseResponse(key=e.key, name=e.name) for e in db_layer.list_exercises(db)]
 
 
 @app.get("/users/{user_id}/exercises", response_model=List[ExerciseResponse])
-def get_recommended_exercises(user_id: int):
+def get_recommended_exercises(user_id: int, db: Session = Depends(get_db)):
     """The core 'ailment -> recommended exercises' endpoint Arya's
     exercise screen calls right after a user/ailment is selected."""
-    db = next(get_db())
     if not db_layer.get_user(db, user_id):
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -140,9 +193,8 @@ def get_recommended_exercises(user_id: int):
 
 
 @app.post("/sessions", response_model=SessionResponse)
-def save_session(req: LogSessionRequest):
+def save_session(req: LogSessionRequest, db: Session = Depends(get_db)):
     """Called once an exercise session ends -- saves reps/score/accuracy/etc."""
-    db = next(get_db())
     if not db_layer.get_user(db, req.user_id):
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -158,10 +210,9 @@ def save_session(req: LogSessionRequest):
 
 
 @app.get("/users/{user_id}/sessions", response_model=List[SessionResponse])
-def get_user_sessions(user_id: int):
+def get_user_sessions(user_id: int, db: Session = Depends(get_db)):
     """The therapist dashboard's main data source -- full session history
     for a patient, for charting progress/accuracy/reps over time."""
-    db = next(get_db())
     if not db_layer.get_user(db, user_id):
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -177,13 +228,13 @@ def get_user_sessions(user_id: int):
 
 
 @app.post("/start-session")
-def start_session(user_id: int = 1, exercise_key: str = "curl"):
+def start_session(user_id: int = 1, exercise_key: str = "curl", db: Session = Depends(get_db)):
     """Launches armup_app.py (the webcam engine) as a separate process,
     pre-filled with the given user and exercise -- called by the
     dashboard's 'Start Exercise' button."""
     if exercise_key not in EXERCISES:
         raise HTTPException(status_code=400, detail=f"Unknown exercise_key: {exercise_key}")
-    if not db_layer.get_user(next(get_db()), user_id):
+    if not db_layer.get_user(db, user_id):
         raise HTTPException(status_code=404, detail="User not found")
 
     subprocess.Popen([
