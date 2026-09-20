@@ -21,6 +21,21 @@ function exStyle(key) {
   return EXERCISE_STYLE[key] || FALLBACK_STYLE;
 }
 
+// The backend stores session times in UTC but sends them without a
+// timezone marker ("2026-09-20T07:36:00"), which browsers would read as
+// local time and show unconverted. Treat them as UTC, then display in IST.
+function parseUtc(ts) {
+  return new Date(/[zZ]$|[+-]\d\d:?\d\d$/.test(ts) ? ts : `${ts}Z`);
+}
+
+function formatIST(ts) {
+  return parseUtc(ts).toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: true,
+  });
+}
+
 const NAV_ITEMS = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, active: true },
   { id: 'session-log', label: 'Session log', icon: ClipboardList, href: '#session-log' },
@@ -78,7 +93,7 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit, allowPatient
 
   // Oldest -> newest for the charts below. Sorted here so it doesn't
   // depend on which order the API happens to return sessions in.
-  const chronological = [...sessions].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+  const chronological = [...sessions].sort((a, b) => parseUtc(a.timestamp) - parseUtc(b.timestamp));
   const recent = chronological.slice(-8);
 
   const totalReps = sessions.reduce((acc, s) => acc + s.reps, 0);
@@ -357,7 +372,7 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit, allowPatient
                       return (
                         <tr key={s.id}>
                           <td className="py-3 font-mono text-xs text-[#8D8777]">
-                            {new Date(s.timestamp).toLocaleDateString()} {new Date(s.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            {formatIST(s.timestamp)}
                           </td>
                           <td className="py-3">
                             <span

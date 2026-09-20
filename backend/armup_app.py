@@ -9,6 +9,7 @@ this file never decides what counts as a rep, it just asks the engine.
 Controls:
   1 / 2 / 3 / 4  -> switch exercise (Curl / Lateral Raise / Shoulder Press / Neck Tilt)
   SPACE          -> start session (from launch screen)
+  f              -> show / hide the FPS counter
   q              -> quit
 
 CHANGE LOG (fix for "score increases with no movement"):
@@ -77,12 +78,39 @@ CHANGE LOG (flappy game removed):
   per-exercise save-on-switch -- it just no longer drives a game canvas.
   Gamification for neck_tilt is deferred to a future phase; armup_flappy.py
   itself was left untouched on disk in case it's revisited later.
+
+CHANGE LOG (partial reps + per-user starting tolerance):
+- The engine now classifies each attempt as correct or partial (see
+  armup_engine.py), so accuracy is no longer always 100%. This file just
+  shows it: a "rep_partial" event flashes an amber hint ("Curl a bit
+  higher") instead of the green success message.
+- On startup we GET /users/{id}/exercises and read each prescribed
+  exercise's starting_tolerance (set per condition in the backend's
+  ailment map -- wider = gentler). It's passed to the engine for that
+  exercise, including after every 1/2/3/4 switch. If the backend is
+  offline or the exercise isn't in the user's plan, the engine's default
+  tolerance is used, exactly as before.
+- The angle readout now also shows the tolerance in effect.
+- save_session_to_backend() now saves whenever there was at least one
+  ATTEMPT (correct or partial), not only when there was a clean rep --
+  otherwise a session of nothing but partial reps (0% accuracy) would be
+  silently dropped instead of showing up in the dashboard.
+
+CHANGE LOG (test instrumentation):
+- Added a small FPS readout (top-left, press F to hide/show) measured over
+  the last 30 frames, and an "Average FPS this run" line printed on quit,
+  so responsiveness can be quoted as a real number.
+- save_session_to_backend() now also prints "Attempts this run: N (correct
+  C, partial P)" -- the exact counts the testing sheet asks for. When the
+  app is launched from the dashboard's Play button, these lines appear in
+  the terminal where uvicorn is running.
 """
 
 import os
 os.environ["GLOG_minloglevel"] = "2"
 
 import argparse
+from collections import deque
 import cv2
 import mediapipe as mp
 import numpy as np
@@ -109,9 +137,13 @@ def save_session_to_backend(user_id, session):
     """Best-effort POST to the backend. Never crashes the app if the
     server is offline or unreachable -- rehab shouldn't stop because
     the API isn't running."""
-    if session.reps == 0:
-        print("No reps recorded this run -- nothing to save.")
+    if not session.hit_log:
+        print("No attempts recorded this run -- nothing to save.")
         return
+    correct = session.hit_log.count("correct")
+    partial = session.hit_log.count("partial")
+    print(f"[{EXERCISES[session.exercise_key]['name']}] Attempts this run: {len(session.hit_log)} "
+          f"(correct {correct}, partial {partial}), accuracy {session.accuracy()}%")
     try:
         resp = requests.post(f"{API_URL}/sessions", json={
             "user_id": user_id,
@@ -128,6 +160,25 @@ def save_session_to_backend(user_id, session):
             print(f"Backend responded {resp.status_code}: {resp.text}")
     except requests.exceptions.RequestException as e:
         print(f"Could not reach backend ({e}) -- session not saved, but app continues fine.")
+
+
+def fetch_starting_tolerances(user_id):
+    """Returns {exercise_key: starting_tolerance} from the user's
+    prescribed plan (the backend's ailment -> exercise map). Best-effort:
+    if the backend is offline or the user has no plan, returns {} and the
+    engine simply uses each exercise's default tolerance."""
+    try:
+        resp = requests.get(f"{API_URL}/users/{user_id}/exercises", timeout=2)
+        if resp.status_code == 200:
+            return {
+                item["key"]: item["starting_tolerance"]
+                for item in resp.json()
+                if item.get("starting_tolerance") is not None
+            }
+        print(f"Backend responded {resp.status_code} for the exercise plan -- using default tolerances.")
+    except requests.exceptions.RequestException as e:
+        print(f"Could not load the exercise plan ({e}) -- using default tolerances.")
+    return {}
 
 
 # ---------- Font setup (Poppins, matching Arya's font-family) ----------
@@ -218,6 +269,11 @@ else:
         USER_ID = int(input("Enter your user id (from POST /users, e.g. 1): ") or "1")
     except ValueError:
         USER_ID = 1
+
+# Starting tolerance per exercise for THIS user, from their prescribed plan.
+PLAN_TOLERANCE = fetch_starting_tolerances(USER_ID)
+if PLAN_TOLERANCE:
+    print(f"Using plan starting tolerances for user {USER_ID}: {PLAN_TOLERANCE}")
 
 COLOR_BG = (53, 16, 27)        # #1B1035 -> matches Arya's --bg1
 COLOR_LIMB = (208, 224, 63)    # #3FE0D0 cyan -> Arya's connector color
@@ -419,7 +475,7 @@ def draw_hud_pil(canvas, session, feedback_flash, tracking_ok):
         draw.text((cx, 44), label.upper(), font=FONT_SMALL, fill=(154, 168, 196, 255))
 
     # Bottom instruction bar
-    hint = "1 Curl   2 Lateral Raise   3 Shoulder Press   4 Neck Tilt   Q Quit"
+    hint = "1 Curl   2 Lateral Raise   3 Shoulder Press   4 Neck Tilt   F FPS   Q Quit"
     draw_card(draw, (14, h - 42, 14 + int(draw.textlength(hint, font=FONT_SMALL)) + 24, h - 14),
               radius=12, fill=(20, 15, 28, 190))
     draw.text((26, h - 36), hint, font=FONT_SMALL, fill=(154, 168, 196, 255))
@@ -432,13 +488,17 @@ def draw_hud_pil(canvas, session, feedback_flash, tracking_ok):
         draw_card(draw, (w/2 - ww/2 - 16, 70, w/2 + ww/2 + 16, 100), radius=12, fill=(45, 30, 20, 210))
         draw.text((w/2 - ww/2, 76), warn, font=FONT_SMALL, fill=(255, 193, 94, 255))
 
-    # Feedback flash, top-center
+    # Feedback flash, top-center. Green for a clean rep, amber for a
+    # partial one (an attempt that fell short of the target).
     if feedback_flash and time.time() < feedback_flash["until"]:
         text = feedback_flash["text"]
+        is_partial = feedback_flash.get("quality") == "partial"
+        card_fill = (45, 30, 20, 210) if is_partial else (20, 40, 30, 210)
+        text_fill = (255, 193, 94, 255) if is_partial else (92, 224, 160, 255)
         tw = draw.textlength(text, font=FONT_TITLE)
         cx = w // 2 - int(tw) // 2
-        draw_card(draw, (cx - 20, 70, cx + int(tw) + 20, 118), radius=20, fill=(20, 40, 30, 210))
-        draw.text((cx, 78), text, font=FONT_HEAD, fill=(92, 224, 160, 255))
+        draw_card(draw, (cx - 20, 70, cx + int(tw) + 20, 118), radius=20, fill=card_fill)
+        draw.text((cx, 78), text, font=FONT_HEAD, fill=text_fill)
 
     pil_img = Image.alpha_composite(pil_img, overlay)
     return to_cv2(pil_img.convert("RGB"))
@@ -481,11 +541,18 @@ if not show_launch_screen():
     raise SystemExit
 
 initial_exercise = args.exercise if args.exercise in EXERCISES else "curl"
-session = SessionState(exercise_key=initial_exercise)
+session = SessionState(
+    exercise_key=initial_exercise,
+    starting_tolerance=PLAN_TOLERANCE.get(initial_exercise),
+)
 feedback_flash = None
 last_frame_time = time.time()
 start_time = time.time()
 key_to_exercise = {ord('1'): "curl", ord('2'): "raise", ord('3'): "press", ord('4'): "neck_tilt"}
+fps_times = deque(maxlen=30)   # timestamps of the last 30 frames
+show_fps = True
+frames_total = 0
+run_start = None
 
 while cap.isOpened():
     now = time.time()
@@ -493,6 +560,10 @@ while cap.isOpened():
     success, frame = cap.read()
     if not success:
         break
+    fps_times.append(now)
+    frames_total += 1
+    if run_start is None:
+        run_start = now
     frame = cv2.flip(frame, 1)
     h, w, _ = frame.shape
 
@@ -562,11 +633,15 @@ while cap.isOpened():
         tracking_ok = min(frame_vis[n1], frame_vis[n2], frame_vis[n3]) > MIN_VISIBILITY
 
         feedback = session.update(live_angle, landmarks_visible=tracking_ok)
-        if feedback["event"] == "rep_complete":
-            feedback_flash = {"text": feedback["message"], "until": time.time() + 1.0}
+        if feedback["event"] in ("rep_complete", "rep_partial"):
+            feedback_flash = {
+                "text": feedback["message"],
+                "quality": feedback["quality"],
+                "until": time.time() + 1.0,
+            }
 
         angle_color = (200, 200, 200) if tracking_ok else (94, 193, 255)
-        cv2.putText(canvas, f"Angle: {int(live_angle)} deg", (14, 70),
+        cv2.putText(canvas, f"Angle: {int(live_angle)} deg   Tol: +/-{session.tolerance:g}", (14, 70),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, angle_color, 1, cv2.LINE_AA)
     else:
         # No person detected at all this frame -- definitely don't trust it.
@@ -577,6 +652,10 @@ while cap.isOpened():
     # so it's visible even before you step into frame.
     draw_pose_hint(canvas, w - 244, 60, time.time(), session.exercise_key)
     draw_accuracy_ring(canvas, session, w - 60, canvas.shape[0] - 80)
+    if show_fps and len(fps_times) > 1:
+        fps = (len(fps_times) - 1) / max(fps_times[-1] - fps_times[0], 1e-6)
+        cv2.putText(canvas, f"FPS: {fps:.0f}", (14, 92),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
 
     canvas = draw_hud_pil(canvas, session, feedback_flash, tracking_ok)
     cv2.imshow("ArmUp", canvas)
@@ -584,15 +663,21 @@ while cap.isOpened():
     key = cv2.waitKey(5) & 0xFF
     if key == ord('q'):
         break
+    if key == ord('f'):
+        show_fps = not show_fps
     if key in key_to_exercise and key_to_exercise[key] != session.exercise_key:
         # Save the exercise we're leaving BEFORE switching, so its reps/
         # score/streak aren't lost or overwritten by the next exercise.
-        # save_session_to_backend() already no-ops on reps == 0, so
-        # switching before doing any reps on the current exercise is safe.
+        # save_session_to_backend() already no-ops when there were no
+        # attempts, so switching before doing anything is safe.
         save_session_to_backend(USER_ID, session)
-        session.set_exercise(key_to_exercise[key])
+        new_key = key_to_exercise[key]
+        session.set_exercise(new_key, PLAN_TOLERANCE.get(new_key))
         session.reset_stats()
 
 save_session_to_backend(USER_ID, session)
+if run_start is not None and frames_total > 1:
+    elapsed = max(time.time() - run_start, 1e-6)
+    print(f"Average FPS this run: {frames_total / elapsed:.1f} ({frames_total} frames in {elapsed:.0f}s)")
 cap.release()
 cv2.destroyAllWindows()

@@ -106,6 +106,13 @@ class SessionResponse(BaseModel):
     level: int
 
 
+def _utc_iso(dt):
+    """Session times are stored as naive UTC (datetime.utcnow). Add the
+    trailing 'Z' so every client knows it's UTC and converts it to the
+    viewer's own timezone, e.g. 07:36Z shows as 1:06 PM in IST."""
+    return dt.isoformat() + "Z" if dt.tzinfo is None else dt.isoformat()
+
+
 # ---------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------
@@ -203,7 +210,7 @@ def save_session(req: LogSessionRequest, db: Session = Depends(get_db)):
         req.accuracy, req.max_streak, req.level,
     )
     return SessionResponse(
-        id=entry.id, exercise_key=entry.exercise_key, timestamp=entry.timestamp.isoformat(),
+        id=entry.id, exercise_key=entry.exercise_key, timestamp=_utc_iso(entry.timestamp),
         reps=entry.reps, score=entry.score, accuracy=entry.accuracy,
         max_streak=entry.max_streak, level=entry.level,
     )
@@ -219,7 +226,7 @@ def get_user_sessions(user_id: int, db: Session = Depends(get_db)):
     history = db_layer.get_history(db, user_id)
     return [
         SessionResponse(
-            id=s.id, exercise_key=s.exercise_key, timestamp=s.timestamp.isoformat(),
+            id=s.id, exercise_key=s.exercise_key, timestamp=_utc_iso(s.timestamp),
             reps=s.reps, score=s.score, accuracy=s.accuracy,
             max_streak=s.max_streak, level=s.level,
         )
