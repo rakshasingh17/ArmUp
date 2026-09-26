@@ -3,6 +3,7 @@ import {
   Activity, Award, CheckCircle2, Dumbbell, Flame, LayoutDashboard,
   ClipboardList, Users, Settings, LogOut, Play, ShieldAlert, User
 } from 'lucide-react';
+import GameCanvas from './GameCanvas';
 
 const API_BASE = "http://localhost:8000";
 
@@ -249,7 +250,7 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit, allowPatient
           </div>
         </header>
 
-        {/* Mode toggle -- Game Mode is a phase-2 placeholder, disabled on purpose */}
+        {/* Mode toggle -- Game mode now renders GameCanvas (render-loop test) */}
         <div className="flex items-center gap-2 mb-8">
           <button
             onClick={() => setMode('exercise')}
@@ -260,14 +261,25 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit, allowPatient
             Exercise mode
           </button>
           <button
-            disabled
-            title="Coming soon in phase 2"
-            className="font-display text-sm px-4 py-2 rounded-full bg-white border border-dashed border-[#E7E2D4] text-[#B7B1A0] cursor-not-allowed flex items-center gap-1.5"
+            onClick={() => setMode('game')}
+            className={`font-display text-sm px-4 py-2 rounded-full transition-colors ${
+              mode === 'game' ? 'bg-[#17140F] text-[#E9E4D6]' : 'bg-white border border-[#E7E2D4] text-[#8D8777]'
+            }`}
           >
             Game mode
-            <span className="text-[9px] uppercase tracking-wide bg-[#F6F1E7] px-1.5 py-0.5 rounded-full">Soon</span>
           </button>
         </div>
+
+        {/* Game mode: render loop test (cave + wizard + orb), driven by
+            the debug slider for now -- swap for real rep-engine progress
+            once the camera feed is wired into this canvas. Sits above the
+            exercise-mode cards below rather than replacing them, so this
+            insertion can't break the existing dashboard layout. */}
+        {mode === 'game' && (
+          <div className="mb-8">
+            <GameCanvas />
+          </div>
+        )}
 
         {/* Pastel stat cards */}
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-5 mb-6">
