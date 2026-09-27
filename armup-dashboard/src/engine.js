@@ -38,8 +38,30 @@ export const EXERCISES = {
   },
   press: {
     name: "Shoulder Press",
-    landmarks: ["LEFT_HIP", "LEFT_SHOULDER", "LEFT_WRIST"],
-    rest: 30, peak: 165, tolerance: 15,
+    // FIX: was ["LEFT_HIP", "LEFT_SHOULDER", "LEFT_WRIST"] with
+    // rest: 30 -- that measures the whole arm's angle relative to the
+    // torso, treating shoulder->wrist as one straight line. A rest
+    // angle of 30 degrees corresponds to the arm hanging almost
+    // straight down at the side, which is NOT where a press actually
+    // returns to between reps -- a real press racks the weight near
+    // the shoulder with the elbow bent (~90-130 degrees on this
+    // landmark set), never dropping the arm fully. That meant
+    // _restHold could never trigger for someone using correct form,
+    // so reps would silently fail to register as complete.
+    //
+    // Fixed by measuring elbow extension directly instead (same
+    // landmark pattern curl already uses: SHOULDER-ELBOW-WRIST), which
+    // is what a press actually is -- the elbow straightening to drive
+    // the hand overhead -- and doesn't depend on exactly how high the
+    // person racks the weight.
+    //
+    // rest/peak below are a reasonable starting estimate (bent ~90 ->
+    // near-locked ~172), NOT physio-validated -- same caveat as
+    // FORM_RULES below. Test against real reps and tune before
+    // shipping; if reps still won't complete, `rest` is probably too
+    // low for how bent people actually rack the weight.
+    landmarks: ["LEFT_SHOULDER", "LEFT_ELBOW", "LEFT_WRIST"],
+    rest: 90, peak: 172, tolerance: 15,
     restMsg: "Reset lower", peakMsg: "Full extension",
     partialMsg: "Push all the way up",
   },
