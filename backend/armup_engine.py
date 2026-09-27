@@ -63,6 +63,28 @@ CHANGE LOG (per-user starting tolerance):
   exercise's default tolerance from EXERCISES is used, as before.
 - Added a read-only `tolerance` property so the interface can display
   the tolerance currently in effect.
+
+CHANGE LOG (press accuracy fix -- rep completion never triggered):
+- "press" used to measure the angle at LEFT_SHOULDER between LEFT_HIP
+  and LEFT_WRIST -- i.e. the whole arm's angle relative to the torso,
+  treating shoulder->wrist as one straight line, with rest=30. A rest
+  angle of 30 degrees corresponds to the arm hanging almost straight
+  down at the side. That's not where a real press returns to between
+  reps: a real press racks the weight near the shoulder with the elbow
+  bent (roughly 90-130 degrees on that same landmark triangle), never
+  dropping the arm fully between reps. So near_rest could never become
+  True for someone using correct form, rep_state got stuck at "peak"
+  forever, and reps silently never completed.
+- Fixed by measuring elbow extension directly instead -- same landmark
+  pattern "curl" already uses (SHOULDER-ELBOW-WRIST) -- since a press
+  actually IS the elbow straightening to drive the hand overhead, and
+  this doesn't depend on exactly how high someone racks the weight.
+- rest=90/peak=172 are a starting estimate (bent ~90 -> near-locked
+  ~172), NOT physio-validated -- same caveat as FORM_RULES below. Test
+  against real reps and retune; if reps still won't complete, `rest`
+  is probably too low for how bent people actually rack the weight.
+  Keep this in sync with the JS port (engine.js) -- that file got the
+  identical change.
 """
 
 import math
@@ -92,8 +114,8 @@ EXERCISES = {
     },
     "press": {
         "name": "Shoulder Press",
-        "landmarks": ("LEFT_HIP", "LEFT_SHOULDER", "LEFT_WRIST"),
-        "rest": 30, "peak": 165, "tolerance": 15,
+        "landmarks": ("LEFT_SHOULDER", "LEFT_ELBOW", "LEFT_WRIST"),
+        "rest": 90, "peak": 172, "tolerance": 15,
         "rest_msg": "Reset lower", "peak_msg": "Full extension",
         "partial_msg": "Push all the way up",
     },
