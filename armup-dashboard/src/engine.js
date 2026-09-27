@@ -60,8 +60,20 @@ export const EXERCISES = {
     // FORM_RULES below. Test against real reps and tune before
     // shipping; if reps still won't complete, `rest` is probably too
     // low for how bent people actually rack the weight.
+    // peak/tolerance loosened TWICE now (172/15 -> 158/20 -> this),
+    // and it's still requiring near-total extension for at least one
+    // real setup. That's a strong signal the remaining gap is
+    // camera-geometry-specific (distance/angle/height relative to the
+    // person), not something a single global constant can fix for
+    // everyone -- the 2D elbow angle at "fully pressed" genuinely
+    // differs by setup. 145/25 (accepts ~120-170) is the last blind
+    // widening worth doing; use the live-angle readout in the HUD
+    // (usePoseSession's liveAngleRef, surfaced in ExerciseCanvas /
+    // GameCanvas) to read the ACTUAL angle at full extension for your
+    // camera and set `peak` to that number directly instead of
+    // guessing again.
     landmarks: ["LEFT_SHOULDER", "LEFT_ELBOW", "LEFT_WRIST"],
-    rest: 90, peak: 172, tolerance: 15,
+    rest: 85, peak: 145, tolerance: 25,
     restMsg: "Reset lower", peakMsg: "Full extension",
     partialMsg: "Push all the way up",
   },

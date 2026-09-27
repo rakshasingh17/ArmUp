@@ -1,29 +1,16 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { EXERCISES } from './engine';
 
 /*
  * GameCanvas
  * ----------
- * The render loop for the "spell battle" game mode. Draw order:
- *   1. Background -- 3-layer parallax: a flat sky color (static), the
- *      main cave art (static), and one foreground rock-silhouette layer
- *      that scrolls slowly for depth. All three are real assets under
- *      /public/game/ (CC-0 pack). Falls back to a coded gradient if any
- *      of them fail to load, so this never breaks.
- *   2. Evil Wizard -- real sprite sheets (idle.png / take-hit.png),
- *      150x150 frames. Idle loops continuously; when a spell lands
- *      (progress hits 1) it switches to the Take Hit animation for one
- *      playthrough, then returns to idle. attack.png / move.png /
- *      death.png are copied into public/game/wizard/ but not wired up
- *      yet -- attack.png is the natural next step once there's a player
- *      "cast" action to trigger it, and death.png once there's a health/
- *      win condition.
- *   3. Orb -- fully coded (radial gradient + particles), reacts live to
- *      `progress` (0..1). No asset needed.
+ * The render loop for the "spell battle" game mode.
  *
- * `progress` is currently driven by a debug slider so the loop can be
- * seen working before real camera/rep data exists. Swap the slider for
- * a prop (e.g. the exercise engine's rep-hold percentage) when wiring
- * to the camera -- nothing else in this file needs to change.
+ * CHANGE: the player box now draws pose.poseCanvasRef (the hook's
+ * internal, already-mirrored detection canvas) instead of mirroring
+ * pose.videoRef itself -- same reasoning as ExerciseCanvas: one fewer
+ * mirror transform, and it's guaranteed to be the same frame the
+ * model actually detected against.
  */
 
 const CANVAS_W = 960;
@@ -36,6 +23,8 @@ const ASSETS = {
   idle: '/game/wizard/idle.png',
   takeHit: '/game/wizard/take-hit.png',
 };
+
+const EXERCISE_ORDER = ['curl', 'raise', 'press', 'neck_tilt'];
 
 function useImage(src) {
   const [img, setImg] = useState(null);
@@ -51,19 +40,11 @@ function useImage(src) {
   return [img, failed];
 }
 
-// Generic sprite-sheet handle: frames laid out left-to-right in one row,
-// all the same size (true for every sheet in this pack -- 150x150).
 function useSpriteSheet(src, frameW, frameH, frameCount) {
   const [img] = useImage(src);
   return { img, frameW, frameH, frameCount };
 }
 
-/*
- * Draws one frame of a sprite sheet. `playhead` is elapsed ms since the
- * animation (re)started; `fps` controls playback speed. `loop=false`
- * clamps on the last frame instead of wrapping, and returns whether the
- * animation has finished (useful for one-shot clips like Take Hit).
- */
 function drawSpriteFrame(ctx, sheet, x, y, scale, playhead, fps, loop = true, flip = false) {
   if (!sheet.img) return { drawn: false, finished: false };
   const rawIndex = Math.floor((playhead / 1000) * fps);
@@ -88,7 +69,6 @@ function drawSpriteFrame(ctx, sheet, x, y, scale, playhead, fps, loop = true, fl
 }
 
 function drawFallbackBackground(ctx) {
-  // Used only if the real assets fail to load (e.g. wrong path).
   const g = ctx.createLinearGradient(0, 0, 0, CANVAS_H);
   g.addColorStop(0, '#241832');
   g.addColorStop(1, '#0d0714');
@@ -99,8 +79,6 @@ function drawFallbackBackground(ctx) {
   ctx.fillText('(cave assets not found -- check /public/game/)', 14, CANVAS_H - 14);
 }
 
-// Tiles a background image horizontally at a given scroll offset, so a
-// single 384x216 layer can scroll infinitely without a visible seam.
 function drawScrollingLayer(ctx, img, scrollX, scale) {
   const drawW = img.width * scale;
   const drawH = img.height * scale;
@@ -117,22 +95,15 @@ function drawBackground(ctx, sky, main, fg, anyFailed, t) {
     drawFallbackBackground(ctx);
     return;
   }
-  // Sky: flat color layer, stretched to fill and static (it's a solid
-  // fill, scrolling it would do nothing visible anyway).
   if (sky) ctx.drawImage(sky, 0, 0, CANVAS_W, CANVAS_H);
 
-  // Main cave art: the detailed midground, scaled up from 384x216 and
-  // held static -- this alone already reads as a complete background.
   if (main) {
     const scale = CANVAS_W / main.width;
     ctx.drawImage(main, 0, CANVAS_H - main.height * scale, CANVAS_W, main.height * scale);
   }
 
-  // Foreground silhouette: scrolls slowly left, tiled seamlessly. This
-  // is the cheap "looks way more alive than it should" parallax trick --
-  // pure visual polish, the game logic doesn't depend on it.
   if (fg) {
-    const scale = (CANVAS_W / fg.width) * 1.05; // slightly oversized so tiling seams sit off-canvas
+    const scale = (CANVAS_W / fg.width) * 1.05;
     drawScrollingLayer(ctx, fg, t / 40, scale);
   }
 
@@ -141,6 +112,41 @@ function drawBackground(ctx, sky, main, fg, anyFailed, t) {
     ctx.font = '12px monospace';
     ctx.fillText('(one or more cave layers failed to load -- check /public/game/)', 14, CANVAS_H - 14);
   }
+}
+
+// Player box -- draws the hook's already-mirrored detection canvas,
+// cropped (object-fit: cover style) to fill the box without distorting
+// the aspect ratio. No mirroring done here -- poseCanvas is already
+// mirrored by the hook.
+function drawPlayerBox(ctx, poseCanvas, x, y, w, h, cameraOn) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x, y, w, h);
+  ctx.clip();
+
+  if (cameraOn && poseCanvas && poseCanvas.width) {
+    const vw = poseCanvas.width, vh = poseCanvas.height;
+    const boxRatio = w / h, vidRatio = vw / vh;
+    let sw = vw, sh = vh, sx = 0, sy = 0;
+    if (vidRatio > boxRatio) { sw = vh * boxRatio; sx = (vw - sw) / 2; }
+    else { sh = vw / boxRatio; sy = (vh - sh) / 2; }
+    ctx.drawImage(poseCanvas, sx, sy, sw, sh, x, y, w, h);
+  } else {
+    ctx.fillStyle = 'rgba(20,14,32,0.6)';
+    ctx.fillRect(x, y, w, h);
+  }
+  ctx.restore();
+
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+  ctx.setLineDash([6, 6]);
+  ctx.strokeRect(x, y, w, h);
+  if (!cameraOn) {
+    ctx.fillStyle = 'rgba(255,255,255,0.4)';
+    ctx.font = '13px sans-serif';
+    ctx.fillText('Start the camera to cast spells', x + 10, y - 10);
+  }
+  ctx.restore();
 }
 
 function drawOrb(ctx, x, y, progress, t) {
@@ -176,10 +182,7 @@ function drawOrb(ctx, x, y, progress, t) {
   ctx.restore();
 }
 
-// Coded impact burst for the moment the spell lands -- no sprite asset
-// needed, matches the plan to skip searching for a hit-effect sheet.
 function drawImpactBurst(ctx, x, y, age) {
-  // age: 0 (just landed) .. 1 (fully faded)
   if (age >= 1) return;
   const alpha = 1 - age;
   const r = 20 + age * 70;
@@ -200,10 +203,19 @@ function drawImpactBurst(ctx, x, y, age) {
   ctx.restore();
 }
 
-export default function GameCanvas() {
+export default function GameCanvas({ pose, userId, apiBase, onSessionSaved }) {
   const canvasRef = useRef(null);
   const rafRef = useRef(null);
-  const [progress, setProgress] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState(null);
+
+  const {
+    poseCanvasRef, progressRef, liveAngleRef, sessionRef,
+    exerciseKey, setExercise,
+    cameraOn, starting, startCamera,
+    stats, resetStats,
+    feedback,
+  } = pose;
 
   const [sky, skyFailed] = useImage(ASSETS.sky);
   const [main, mainFailed] = useImage(ASSETS.main);
@@ -213,23 +225,33 @@ export default function GameCanvas() {
   const idleSheet = useSpriteSheet(ASSETS.idle, 150, 150, 8);
   const takeHitSheet = useSpriteSheet(ASSETS.takeHit, 150, 150, 4);
 
-  // Wizard animation state lives in refs -- the render loop mutates it
-  // every frame without going through React state/re-renders.
-  const wizardStateRef = useRef('idle'); // 'idle' | 'takeHit'
+  const wizardStateRef = useRef('idle');
   const wizardPlayheadRef = useRef(0);
   const lastFrameTimeRef = useRef(null);
-  const impactRef = useRef(null); // {x, y, startedAt} | null
+  const impactRef = useRef(null);
+
+  const orbStartX = 260;
+  const orbEndX = CANVAS_W - 260;
+  const orbY = CANVAS_H - 150;
+  const wizardX = CANVAS_W - 340;
+  const wizardY = CANVAS_H - 300;
+  const wizardScale = 2;
+  const playerBox = { x: 60, y: CANVAS_H - 260, w: 220, h: 260 };
+
+  const triggerLanding = () => {
+    wizardStateRef.current = 'takeHit';
+    wizardPlayheadRef.current = 0;
+    impactRef.current = { x: orbEndX, y: orbY, startedAt: performance.now() };
+  };
+
+  useEffect(() => {
+    if (feedback?.event === 'rep_complete') triggerLanding();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [feedback]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
-
-    const orbStartX = 260;
-    const orbEndX = CANVAS_W - 260;
-    const orbY = CANVAS_H - 150;
-    const wizardX = CANVAS_W - 340;
-    const wizardY = CANVAS_H - 300;
-    const wizardScale = 2;
 
     const loop = (t) => {
       if (lastFrameTimeRef.current == null) lastFrameTimeRef.current = t;
@@ -240,18 +262,8 @@ export default function GameCanvas() {
       ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
       drawBackground(ctx, sky, main, fg, anyBgFailed, t);
 
-      // Player placeholder -- swap for the real webcam <video> frame
-      // (drawImage(videoEl, ...) into this same canvas) once wired up.
-      ctx.save();
-      ctx.strokeStyle = 'rgba(255,255,255,0.25)';
-      ctx.setLineDash([6, 6]);
-      ctx.strokeRect(60, CANVAS_H - 260, 220, 260);
-      ctx.fillStyle = 'rgba(255,255,255,0.4)';
-      ctx.font = '13px sans-serif';
-      ctx.fillText('webcam feed goes here', 68, CANVAS_H - 270);
-      ctx.restore();
+      drawPlayerBox(ctx, poseCanvasRef.current, playerBox.x, playerBox.y, playerBox.w, playerBox.h, cameraOn);
 
-      // Wizard: idle loops forever; take-hit plays once then falls back.
       if (wizardStateRef.current === 'takeHit') {
         const { finished } = drawSpriteFrame(
           ctx, takeHitSheet, wizardX, wizardY, wizardScale,
@@ -268,42 +280,75 @@ export default function GameCanvas() {
         );
       }
 
-      // Orb travels from the player toward the wizard as progress rises.
+      const progress = cameraOn ? progressRef.current : 0;
       const orbX = orbStartX + (orbEndX - orbStartX) * progress;
       drawOrb(ctx, orbX, orbY, progress, t);
 
       if (impactRef.current) {
-        const age = (t - impactRef.current.startedAt) / 500; // 500ms burst
+        const age = (t - impactRef.current.startedAt) / 500;
         drawImpactBurst(ctx, impactRef.current.x, impactRef.current.y, age);
         if (age >= 1) impactRef.current = null;
+      }
+
+      // Debug angle readout -- for tuning EXERCISES.rest/peak in
+      // engine.js against your actual camera setup (see engine.js's
+      // press comment). Drawn directly on canvas since this component
+      // has no HTML HUD.
+      if (cameraOn) {
+        const ex = EXERCISES[exerciseKey];
+        const live = liveAngleRef.current;
+        const text = live == null
+          ? `angle: --  (target ${ex.rest}\u00B1${ex.tolerance} / ${ex.peak}\u00B1${ex.tolerance})`
+          : `angle: ${Math.round(live)}\u00B0  (target ${ex.rest}\u00B1${ex.tolerance} / ${ex.peak}\u00B1${ex.tolerance})`;
+        ctx.save();
+        ctx.font = '13px monospace';
+        ctx.fillStyle = 'rgba(255,255,255,0.85)';
+        ctx.fillText(text, playerBox.x, playerBox.y - 10);
+        ctx.restore();
       }
 
       rafRef.current = requestAnimationFrame(loop);
     };
     rafRef.current = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [progress, sky, main, fg, anyBgFailed, idleSheet, takeHitSheet]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sky, main, fg, anyBgFailed, idleSheet, takeHitSheet, cameraOn]);
 
-  const triggerLanding = () => {
-    wizardStateRef.current = 'takeHit';
-    wizardPlayheadRef.current = 0;
-    impactRef.current = { x: CANVAS_W - 260, y: CANVAS_H - 150, startedAt: performance.now() };
-  };
-
-  const handleSliderChange = (e) => {
-    const v = Number(e.target.value) / 100;
-    const wasBelow = progress < 1;
-    setProgress(v);
-    if (v >= 1 && wasBelow) {
-      triggerLanding();
-      setTimeout(() => setProgress(0), 500);
+  const handleEndSession = async () => {
+    if (stats.reps === 0) { resetStats(); return; }
+    setSaving(true);
+    setSaveMsg(null);
+    try {
+      const res = await fetch(`${apiBase}/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: userId,
+          exercise_key: sessionRef.current.exerciseKey,
+          reps: stats.reps,
+          score: stats.score,
+          accuracy: stats.accuracy,
+          max_streak: stats.maxStreak,
+          level: stats.level,
+        }),
+      });
+      if (!res.ok) throw new Error(`Server responded ${res.status}`);
+      setSaveMsg('Session saved.');
+      resetStats();
+      onSessionSaved?.();
+    } catch (err) {
+      console.error('Could not save session:', err);
+      setSaveMsg("Couldn't save -- is the backend running?");
+    } finally {
+      setSaving(false);
+      setTimeout(() => setSaveMsg(null), 3000);
     }
   };
 
   return (
     <div className="w-full">
       <div
-        className="w-full rounded-2xl overflow-hidden border border-[#E7E2D4] bg-black"
+        className="w-full relative rounded-2xl overflow-hidden border border-[#E7E2D4] bg-black"
         style={{ aspectRatio: `${CANVAS_W} / ${CANVAS_H}` }}
       >
         <canvas
@@ -312,23 +357,46 @@ export default function GameCanvas() {
           height={CANVAS_H}
           style={{ width: '100%', height: '100%', display: 'block' }}
         />
+        {!cameraOn && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+            <button
+              onClick={startCamera}
+              disabled={starting}
+              className="font-display px-5 py-2.5 rounded-full bg-[#5CE0A0] text-[#10281c] font-semibold disabled:opacity-60"
+            >
+              {starting ? 'Starting…' : 'Start camera & cast spells'}
+            </button>
+          </div>
+        )}
+        <div className="absolute top-3 right-3 flex gap-3 bg-black/50 rounded-xl px-3 py-2 text-white text-xs">
+          <span><b>{stats.score}</b> score</span>
+          <span><b>{stats.reps}</b> reps</span>
+          <span><b>{stats.streak}</b> streak</span>
+        </div>
       </div>
-      <div className="flex items-center gap-3 mt-3">
-        <span className="text-xs text-[#8D8777] whitespace-nowrap">
-          Test progress (fake -- replace with real rep engine value)
-        </span>
-        <input
-          type="range"
-          min="0"
-          max="100"
-          value={Math.round(progress * 100)}
-          onChange={handleSliderChange}
-          className="w-full"
-        />
-        <span className="text-xs font-mono text-[#221E18] w-10 text-right">
-          {Math.round(progress * 100)}%
-        </span>
+
+      <div className="flex items-center gap-2 mt-3 flex-wrap">
+        <span className="text-xs text-[#8D8777] whitespace-nowrap mr-1">Casting exercise:</span>
+        {EXERCISE_ORDER.map((key) => (
+          <button
+            key={key}
+            onClick={() => setExercise(key)}
+            className={`font-display text-xs px-3 py-1.5 rounded-full transition-colors ${
+              exerciseKey === key ? 'bg-[#17140F] text-[#E9E4D6]' : 'bg-white border border-[#E7E2D4] text-[#8D8777]'
+            }`}
+          >
+            {EXERCISES[key].name}
+          </button>
+        ))}
+        <button
+          onClick={handleEndSession}
+          disabled={saving}
+          className="font-display text-xs px-3 py-1.5 rounded-full bg-white border border-[#E7E2D4] text-[#8D8777] ml-auto disabled:opacity-60"
+        >
+          {saving ? 'Saving…' : 'End session & save'}
+        </button>
       </div>
+      {saveMsg && <p className="text-xs text-[#8D8777] mt-1">{saveMsg}</p>}
     </div>
   );
 }

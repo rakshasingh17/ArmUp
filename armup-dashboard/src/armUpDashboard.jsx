@@ -4,6 +4,8 @@ import {
   ClipboardList, Users, Settings, LogOut, Play, ShieldAlert, User
 } from 'lucide-react';
 import GameCanvas from './GameCanvas';
+import ExerciseCanvas from './ExerciseCanvas';
+import { usePoseSession } from './usePoseSession';
 
 const API_BASE = "http://localhost:8000";
 
@@ -52,7 +54,11 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit, allowPatient
   const [recommended, setRecommended] = useState([]);
   const [sessions, setSessions] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [mode, setMode] = useState('exercise'); // 'exercise' | 'game' (game mode is phase 2)
+  const [mode, setMode] = useState('exercise'); // 'exercise' | 'game'
+
+  // One shared camera + MediaPipe + rep-engine session for BOTH modes --
+  // see usePoseSession.js for why this can't live inside each canvas.
+  const pose = usePoseSession({ initialExercise: 'curl' });
 
   useEffect(() => {
     fetchDashboardData(userId);
@@ -82,14 +88,15 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit, allowPatient
     }
   };
 
-  const startExercise = async (exerciseKey) => {
-    try {
-      await fetch(`${API_BASE}/start-session?user_id=${userId}&exercise_key=${exerciseKey}`, {
-        method: "POST",
-      });
-    } catch (err) {
-      console.error("Could not start session:", err);
-    }
+  // Used to spawn the old desktop OpenCV app (armup_app.py) as a
+  // separate process. Now that the browser can track pose itself
+  // (ExerciseCanvas / GameCanvas via usePoseSession), "Play" on a
+  // prescribed exercise just switches the in-page tracker to it and
+  // jumps to Exercise mode -- no subprocess, no /start-session call.
+  const startExercise = (exerciseKey) => {
+    pose.setExercise(exerciseKey);
+    setMode('exercise');
+    document.getElementById('exercise-stage')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
   // Oldest -> newest for the charts below. Sorted here so it doesn't
@@ -270,16 +277,19 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit, allowPatient
           </button>
         </div>
 
-        {/* Game mode: render loop test (cave + wizard + orb), driven by
-            the debug slider for now -- swap for real rep-engine progress
-            once the camera feed is wired into this canvas. Sits above the
-            exercise-mode cards below rather than replacing them, so this
-            insertion can't break the existing dashboard layout. */}
-        {mode === 'game' && (
-          <div className="mb-8">
-            <GameCanvas />
-          </div>
-        )}
+        {/* Both modes share one camera + tracking session (the `pose`
+            object from usePoseSession) -- switching tabs just changes
+            which renderer is on screen, never resets reps or re-asks
+            for camera permission. Sits above the stat cards below
+            rather than replacing them, so this can't break the rest
+            of the dashboard layout. */}
+        <div id="exercise-stage" className="mb-8 scroll-mt-6">
+          {mode === 'exercise' ? (
+            <ExerciseCanvas pose={pose} userId={userId} apiBase={API_BASE} onSessionSaved={() => fetchDashboardData(userId)} />
+          ) : (
+            <GameCanvas pose={pose} userId={userId} apiBase={API_BASE} onSessionSaved={() => fetchDashboardData(userId)} />
+          )}
+        </div>
 
         {/* Pastel stat cards */}
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-5 mb-6">
