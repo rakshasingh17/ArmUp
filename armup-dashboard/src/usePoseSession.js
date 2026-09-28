@@ -71,6 +71,28 @@ function smooth(store, name, raw) {
   return store[name];
 }
 
+// Turns the browser's cryptic camera errors into something actionable.
+function describeStartError(err, stage) {
+  if (stage === 'model') {
+    return "Camera opened, but the pose model couldn't load. Check your internet connection (it downloads from jsdelivr / Google storage) and try again.";
+  }
+  switch (err?.name) {
+    case 'NotAllowedError':
+    case 'SecurityError':
+      return 'Camera permission is blocked. Click the camera/lock icon in the address bar, allow the camera, then try again. (On Windows also check Settings > Privacy > Camera.)';
+    case 'NotFoundError':
+    case 'OverconstrainedError':
+      return "No usable camera found (or it doesn't support 640x480).";
+    case 'NotReadableError':
+    case 'AbortError':
+      return 'The camera is busy. Close anything else using it (Zoom/Teams, another browser tab, pose-test.html, or the old ArmUp desktop window), then try again.';
+    case 'InsecureContext':
+      return 'Browsers only allow the camera on https or localhost. Open the app via http://localhost:5173 rather than a network IP.';
+    default:
+      return err?.message || String(err);
+  }
+}
+
 const EMPTY_STATS = { score: 0, reps: 0, streak: 0, maxStreak: 0, level: 1, accuracy: 0 };
 
 export function usePoseSession({ initialExercise = 'curl' } = {}) {
@@ -127,9 +149,15 @@ export function usePoseSession({ initialExercise = 'curl' } = {}) {
   const startCamera = useCallback(async () => {
     if (cameraOn || starting) return;
     setStarting(true);
+    let stage = 'camera';
     try {
       setError(null);
       setStatus('Requesting camera access...');
+      if (!navigator.mediaDevices?.getUserMedia) {
+        const e = new Error('mediaDevices unavailable');
+        e.name = 'InsecureContext';
+        throw e;
+      }
       const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
       streamRef.current = stream;
 
@@ -162,6 +190,7 @@ export function usePoseSession({ initialExercise = 'curl' } = {}) {
       poseCanvasRef.current.width = video.videoWidth;
       poseCanvasRef.current.height = video.videoHeight;
 
+      stage = 'model';
       setStatus('Loading pose model (first load can take a few seconds)...');
       const visionModule = await import(/* @vite-ignore */ MP_CDN);
       const { PoseLandmarker, FilesetResolver } = visionModule;
@@ -190,7 +219,18 @@ export function usePoseSession({ initialExercise = 'curl' } = {}) {
       setCameraOn(true);
     } catch (err) {
       console.error('usePoseSession: failed to start camera', err);
-      setError(err?.message || String(err));
+      // Release the camera if we got as far as opening it -- otherwise
+      // a model-load failure leaves the webcam light on and the device
+      // locked, which blocks the retry.
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+      }
+      if (videoRef.current) {
+        videoRef.current.remove();
+        videoRef.current = null;
+      }
+      setError(describeStartError(err, stage));
       setStatus('Failed to start camera.');
       setCameraOn(false);
     } finally {
