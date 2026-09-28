@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>ArmUp -- Browser Pose Tracking Test</title>
+<style>
+  :root {
+    --bg: #1B1035;
+    --card: #241832cc;
+    --accent: #FF6B8B;
+    --limb: #3FE0D0;
+    --good: #5CE0A0;
+    --warn: #FFC15E;
+    --text: #F3F6FA;
+  }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 20px;
+  }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
+  p.sub { color: #9AA8C4; font-size: 13px; margin: 0 0 16px; }
+
+  .layout {
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+    max-width: 95vw;
+  }
+
+  .stage {
+    position: relative;
+    width: 960px;
+    max-width: 100%;
+    aspect-ratio: 4 / 3;
+    background: #000;
+    border-radius: 16px;
+    overflow: hidden;
+  }
+  canvas#output { width: 100%; height: 100%; display: block; }
+  video#webcam { display: none; }
+
+  .hud {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    font-size: 13px;
+  }
+  .chip {
+    position: absolute;
+    top: 12px; left: 12px;
+    background: var(--card);
+    border: 1px solid var(--accent);
+    border-radius: 12px;
+    padding: 8px 14px;
+    font-weight: 600;
+  }
+  .stats {
+    position: absolute;
+    top: 12px; right: 12px;
+    display: flex; gap: 14px;
+    background: var(--card);
+    border: 1px solid #ffffff30;
+    border-radius: 12px;
+    padding: 8px 14px;
+  }
+  .stats div { text-align: center; }
+  .stats .val { font-size: 16px; font-weight: 700; color: var(--limb); }
+  .stats .lbl { font-size: 10px; text-transform: uppercase; color: #9AA8C4; }
+
+  .flash {
+    position: absolute;
+    top: 60px; left: 50%; transform: translateX(-50%);
+    background: #14281ed0;
+    border-radius: 14px;
+    padding: 10px 18px;
+    font-weight: 600;
+    color: var(--good);
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+  .flash.partial { background: #2d1e14d0; color: var(--warn); }
+  .flash.show { opacity: 1; }
+
+  .form-flash {
+    position: absolute;
+    top: 112px; left: 50%; transform: translateX(-50%);
+    background: #2d1e14d0;
+    border-radius: 14px;
+    padding: 8px 16px;
+    font-weight: 600;
+    color: var(--warn);
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+  .form-flash.show { opacity: 1; }
+
+  .warn-banner {
+    position: absolute;
+    top: 60px; left: 50%; transform: translateX(-50%);
+    background: #2d1e14d0;
+    border-radius: 12px;
+    padding: 6px 14px;
+    color: var(--warn);
+    font-size: 12px;
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+  .warn-banner.show { opacity: 1; }
+
+  .bar {
+    position: absolute;
+    bottom: 12px; left: 12px; right: 12px;
+    background: var(--card);
+    border-radius: 12px;
+    padding: 8px 14px;
+    font-size: 12px;
+    color: #9AA8C4;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  /* --- Demo / reference-pose card ---
+     Title is plain HTML sitting ABOVE the canvas, never drawn onto
+     it -- this is what keeps rig geometry and label text from ever
+     being able to collide, regardless of rig scale (see avatarDemo.js
+     header comment). */
+  .demo-card {
+    width: 200px;
+    flex-shrink: 0;
+    background: var(--card);
+    border: 1px solid #ffffff30;
+    border-radius: 16px;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+  }
+  .demo-card .demo-eyebrow {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #9AA8C4;
+    align-self: flex-start;
+  }
+  .demo-card .demo-title {
+    font-size: 15px;
+    font-weight: 700;
+    align-self: flex-start;
+    margin-top: -4px;
+  }
+  .demo-stage {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    background: radial-gradient(circle at 50% 30%, #2c1d47 0%, #180c2c 75%);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  canvas#demoCanvas { width: 100%; height: 100%; display: block; }
+  .demo-card .demo-caption {
+    font-size: 11.5px;
+    color: #9AA8C4;
+    text-align: center;
+    line-height: 1.4;
+  }
+
+  .controls {
+    margin-top: 16px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  button {
+    background: #241832;
+    color: var(--text);
+    border: 1px solid #ffffff30;
+    border-radius: 10px;
+    padding: 8px 16px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  button.active { background: var(--accent); border-color: var(--accent); color: #1B1035; font-weight: 700; }
+  button#startBtn { background: var(--good); color: #10281c; font-weight: 700; border: none; }
+  button#startBtn:disabled { opacity: 0.5; cursor: default; }
+
+  #status { margin-top: 10px; font-size: 12px; color: #9AA8C4; text-align: center; max-width: 700px; }
+  #status.error { color: #ff8a8a; }
+</style>
+</head>
+<body>
+
+<h1>ArmUp -- Browser Pose Tracking Test</h1>
+<p class="sub">Standalone test page. Not wired into the dashboard yet -- verifies getUserMedia + MediaPipe PoseLandmarker + engine.js before touching GameCanvas.</p>
+
+<div class="layout">
+  <div class="stage">
+    <video id="webcam" autoplay playsinline muted></video>
+    <canvas id="output"></canvas>
+    <div class="hud">
+      <div class="chip" id="exChip">Bicep Curl</div>
+      <div class="stats">
+        <div><div class="val" id="statScore">0</div><div class="lbl">Score</div></div>
+        <div><div class="val" id="statReps">0</div><div class="lbl">Reps</div></div>
+        <div><div class="val" id="statStreak">0</div><div class="lbl">Streak</div></div>
+        <div><div class="val" id="statLevel">1</div><div class="lbl">Lvl</div></div>
+        <div><div class="val" id="statAcc">0%</div><div class="lbl">Acc</div></div>
+      </div>
+      <div class="warn-banner" id="warnBanner">Step back / adjust lighting so your arm is clearly visible</div>
+      <div class="flash" id="flash"></div>
+      <div class="form-flash" id="formFlash"></div>
+      <div class="bar">
+        <span>1 Curl &nbsp; 2 Lateral Raise &nbsp; 3 Shoulder Press &nbsp; 4 Neck Tilt</span>
+        <span id="fps">FPS: --</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="demo-card">
+    <span class="demo-eyebrow">Do a:</span>
+    <span class="demo-title" id="demoTitle">Bicep Curl</span>
+    <div class="demo-stage">
+      <canvas id="demoCanvas" width="200" height="200"></canvas>
+    </div>
+    <p class="demo-caption" id="demoCaption">Follow the demo, then step into frame.</p>
+  </div>
+</div>
+
+<div class="controls">
+  <button id="startBtn">Start camera</button>
+  <button data-ex="curl" class="ex-btn active">1. Curl</button>
+  <button data-ex="raise" class="ex-btn">2. Lateral Raise</button>
+  <button data-ex="press" class="ex-btn">3. Shoulder Press</button>
+  <button data-ex="neck_tilt" class="ex-btn">4. Neck Tilt</button>
+</div>
+
+<p id="status">Click "Start camera" to load the pose model and begin.</p>
+
+<script type="module">
+import { SessionState, EXERCISES, FORM_RULES, angleAt, MIN_VISIBILITY } from './engine.js';
+import { drawExerciseHint, fitScale, RIG_BOUNDS } from './avatarDemo.js';
+
+const DEMO_MARGIN_PX = 12; // must match avatarDemo.js's fitScale() default
+
+const MP_CDN = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+const MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
+
+// Same landmark index map as backend/armup_app.py's LM dict --
+// PoseLandmarker's index scheme is identical between Python and JS.
+const LM = {
+  NOSE: 0,
+  LEFT_SHOULDER: 11, RIGHT_SHOULDER: 12,
+  LEFT_ELBOW: 13, RIGHT_ELBOW: 14,
+  LEFT_WRIST: 15, RIGHT_WRIST: 16,
+  LEFT_HIP: 23, RIGHT_HIP: 24,
+};
+
+const UPPER_BODY_CONNECTIONS = [
+  ["LEFT_SHOULDER", "RIGHT_SHOULDER"], ["LEFT_SHOULDER", "LEFT_ELBOW"],
+  ["LEFT_ELBOW", "LEFT_WRIST"], ["RIGHT_SHOULDER", "RIGHT_ELBOW"],
+  ["RIGHT_ELBOW", "RIGHT_WRIST"], ["LEFT_SHOULDER", "LEFT_HIP"],
+  ["RIGHT_SHOULDER", "RIGHT_HIP"], ["LEFT_HIP", "RIGHT_HIP"],
+];
+
+const SMOOTHING_ALPHA = 0.3; // same as Python's smooth()
+const smoothed = {};
+function smooth(name, raw) {
+  if (!smoothed[name]) smoothed[name] = { x: raw.x, y: raw.y };
+  else {
+    smoothed[name].x += SMOOTHING_ALPHA * (raw.x - smoothed[name].x);
+    smoothed[name].y += SMOOTHING_ALPHA * (raw.y - smoothed[name].y);
+  }
+  return smoothed[name];
+}
+
+const video = document.getElementById('webcam');
+const canvas = document.getElementById('output');
+const ctx = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
+const startBtn = document.getElementById('startBtn');
+
+const exChip = document.getElementById('exChip');
+const statScore = document.getElementById('statScore');
+const statReps = document.getElementById('statReps');
+const statStreak = document.getElementById('statStreak');
+const statLevel = document.getElementById('statLevel');
+const statAcc = document.getElementById('statAcc');
+const flashEl = document.getElementById('flash');
+const formFlashEl = document.getElementById('formFlash');
+const warnBanner = document.getElementById('warnBanner');
+const fpsEl = document.getElementById('fps');
+
+// --- Demo / reference-pose card wiring ---
+const demoCanvas = document.getElementById('demoCanvas');
+const demoCtx = demoCanvas.getContext('2d');
+const demoTitle = document.getElementById('demoTitle');
+const demoCaption = document.getElementById('demoCaption');
+const DEMO_CAPTIONS = {
+  curl: "Extend fully, then curl up to your shoulder.",
+  raise: "Raise straight out to the side, to shoulder height.",
+  press: "Press straight overhead from shoulder height.",
+  neck_tilt: "Tilt your head gently toward one shoulder.",
+};
+// DPR-aware canvas backing store so the rig stays crisp, not blurry.
+function setupDemoCanvasBacking() {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = demoCanvas.getBoundingClientRect();
+  const w = rect.width || 200, h = rect.height || 200;
+  demoCanvas.width = Math.round(w * dpr);
+  demoCanvas.height = Math.round(h * dpr);
+  demoCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { w, h };
+}
+let demoSize = setupDemoCanvasBacking();
+window.addEventListener('resize', () => { demoSize = setupDemoCanvasBacking(); });
+
+function renderDemoFrame(t) {
+  // t comes straight from the page's single requestAnimationFrame
+  // clock (see loop() below) -- never Date.now(). This is what keeps
+  // the neck-tilt swing direction consistent frame to frame instead
+  // of drifting relative to everything else driven by rAF.
+  const { w, h } = demoSize;
+  demoCtx.clearRect(0, 0, w, h);
+  const scale = fitScale(w, h, DEMO_MARGIN_PX);
+  // Derive the origin from RIG_BOUNDS itself (top-anchored at the
+  // margin, horizontally centered on the rig's own midpoint) instead
+  // of a hand-picked offset -- a hardcoded originY here previously
+  // clipped the character's feet once the rig grew legs, because it
+  // was tuned for the old, much shorter stick-figure bounds and never
+  // got revisited when RIG_BOUNDS changed. Deriving it from
+  // RIG_BOUNDS means it can't go stale like that again.
+  const rigCenterX = (RIG_BOUNDS.left + RIG_BOUNDS.right) / 2;
+  const originX = w / 2 - rigCenterX * scale;
+  const originY = DEMO_MARGIN_PX - RIG_BOUNDS.top * scale;
+  drawExerciseHint(demoCtx, session.exerciseKey, originX, originY, scale, t);
+}
+
+let session = new SessionState({ exerciseKey: "curl" });
+let poseLandmarker = null;
+let running = false;
+let flashUntil = 0;
+let formFlashUntil = 0;
+
+const fpsTimes = [];
+
+function setStatus(msg, isError = false) {
+  statusEl.textContent = msg;
+  statusEl.className = isError ? 'error' : '';
+}
+
+document.querySelectorAll('.ex-btn').forEach(btn => {
+  btn.addEventListener('click', () => switchExercise(btn.dataset.ex));
+});
+window.addEventListener('keydown', (e) => {
+  const map = { '1': 'curl', '2': 'raise', '3': 'press', '4': 'neck_tilt' };
+  if (map[e.key]) switchExercise(map[e.key]);
+});
+
+function switchExercise(key) {
+  if (key === session.exerciseKey) return;
+  session.setExercise(key);
+  session.resetStats();
+  document.querySelectorAll('.ex-btn').forEach(b => b.classList.toggle('active', b.dataset.ex === key));
+  exChip.textContent = EXERCISES[key].name;
+  demoTitle.textContent = EXERCISES[key].name;
+  demoCaption.textContent = DEMO_CAPTIONS[key] || '';
+}
+// Set initial demo caption/title to match the default exercise.
+demoTitle.textContent = EXERCISES[session.exerciseKey].name;
+demoCaption.textContent = DEMO_CAPTIONS[session.exerciseKey] || '';
+
+startBtn.addEventListener('click', start);
+
+async function start() {
+  startBtn.disabled = true;
+  try {
+    setStatus("Requesting camera access...");
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+    video.srcObject = stream;
+    await new Promise((resolve) => { video.onloadedmetadata = resolve; });
+    await video.play();
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    setStatus("Loading MediaPipe pose model (first load can take a few seconds)...");
+    const visionModule = await import(MP_CDN);
+    const { PoseLandmarker, FilesetResolver } = visionModule;
+    const filesetResolver = await FilesetResolver.forVisionTasks(`${MP_CDN}/wasm`);
+    poseLandmarker = await PoseLandmarker.createFromOptions(filesetResolver, {
+      baseOptions: { modelAssetPath: MODEL_URL, delegate: "GPU" },
+      runningMode: "VIDEO",
+      minPoseDetectionConfidence: 0.6,
+      minTrackingConfidence: 0.6,
+    });
+
+    setStatus("Running. Step back so your upper body is fully visible.");
+    // NOTE: no requestAnimationFrame(loop) here -- loop() has been
+    // running continuously since page load (see bottom of file) so the
+    // demo card animates before the camera starts. Setting `running`
+    // is enough; the already-running loop picks up camera drawing on
+    // its very next tick. Calling requestAnimationFrame(loop) again
+    // here would spawn a second parallel loop.
+    running = true;
+  } catch (err) {
+    console.error(err);
+    setStatus(`Failed to start: ${err.message}. If this is a permissions error, check the browser's camera icon in the address bar.`, true);
+    startBtn.disabled = false;
+  }
+}
+
+function loop(t) {
+  // The demo card animates continuously regardless of camera/tracking
+  // state, off this same rAF timestamp -- so it never needs `running`
+  // gated separately and never touches Date.now().
+  renderDemoFrame(t);
+
+  if (!running) { requestAnimationFrame(loop); return; }
+
+  // Mirror the frame onto the canvas -- both for display AND as the
+  // detection source, same trick as backend/armup_app.py's
+  // cv2.flip(frame, 1) before pose detection. This means landmark
+  // coordinates come out already mirrored, so LEFT_* = your physical
+  // right side, exactly matching the Python app's behavior/comments.
+  ctx.save();
+  ctx.translate(canvas.width, 0);
+  ctx.scale(-1, 1);
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  ctx.restore();
+
+  const result = poseLandmarker.detectForVideo(canvas, performance.now());
+
+  let trackingOk = false;
+
+  if (result.landmarks && result.landmarks.length > 0) {
+    const landmarks = result.landmarks[0];
+    const framePoints = {};
+    const frameVis = {};
+    for (const [name, idx] of Object.entries(LM)) {
+      const lm = landmarks[idx];
+      const px = { x: lm.x * canvas.width, y: lm.y * canvas.height };
+      framePoints[name] = smooth(name, px);
+      frameVis[name] = lm.visibility ?? 1.0;
+    }
+
+    // Synthetic neck_tilt points -- identical derivation to armup_app.py
+    const ls = framePoints.LEFT_SHOULDER, rs = framePoints.RIGHT_SHOULDER;
+    const neckBaseRaw = { x: (ls.x + rs.x) / 2, y: (ls.y + rs.y) / 2 };
+    const neckBase = smooth("NECK_BASE", neckBaseRaw);
+    framePoints.NECK_BASE = neckBase;
+    framePoints.VERTICAL_REF = { x: neckBase.x, y: neckBase.y - 100 };
+    const shoulderVis = Math.min(frameVis.LEFT_SHOULDER, frameVis.RIGHT_SHOULDER);
+    frameVis.NECK_BASE = shoulderVis;
+    frameVis.VERTICAL_REF = shoulderVis;
+
+    // Draw skeleton
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#3FE0D0';
+    for (const [a, b] of UPPER_BODY_CONNECTIONS) {
+      ctx.beginPath();
+      ctx.moveTo(framePoints[a].x, framePoints[a].y);
+      ctx.lineTo(framePoints[b].x, framePoints[b].y);
+      ctx.stroke();
+    }
+    ctx.fillStyle = '#FF6B8B';
+    const drawn = new Set();
+    for (const [a, b] of UPPER_BODY_CONNECTIONS) {
+      for (const name of [a, b]) {
+        if (!drawn.has(name)) {
+          drawn.add(name);
+          ctx.beginPath();
+          ctx.arc(framePoints[name].x, framePoints[name].y, 6, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    }
+    if (session.exerciseKey === "neck_tilt") {
+      ctx.strokeStyle = '#D5E05E';
+      ctx.beginPath();
+      ctx.moveTo(neckBase.x, neckBase.y);
+      ctx.lineTo(framePoints.NOSE.x, framePoints.NOSE.y);
+      ctx.stroke();
+    }
+
+    // Feed the engine -- identical contract to armup_app.py
+    const [n1, n2, n3] = session.exercise.landmarks;
+    const liveAngle = angleAt(framePoints[n1], framePoints[n2], framePoints[n3]);
+    trackingOk = Math.min(frameVis[n1], frameVis[n2], frameVis[n3]) > MIN_VISIBILITY;
+
+    const feedback = session.update(liveAngle, trackingOk);
+    if (feedback.event === "rep_complete" || feedback.event === "rep_partial") {
+      flashEl.textContent = feedback.message;
+      flashEl.className = 'flash show' + (feedback.quality === 'partial' ? ' partial' : '');
+      flashUntil = performance.now() + 1000;
+    }
+
+    if (trackingOk) {
+      const formAngles = {};
+      for (const rule of (FORM_RULES[session.exerciseKey] || [])) {
+        const [ra, rb, rc] = rule.pts;
+        if (framePoints[ra] && framePoints[rb] && framePoints[rc]) {
+          formAngles[rule.id] = angleAt(framePoints[ra], framePoints[rb], framePoints[rc]);
+        }
+      }
+      const formMsg = session.checkForm(formAngles);
+      if (formMsg) {
+        formFlashEl.textContent = formMsg;
+        formFlashEl.classList.add('show');
+        formFlashUntil = performance.now() + 1500;
+      }
+    }
+  } else {
+    session.update(0, false);
+  }
+
+  warnBanner.classList.toggle('show', result.landmarks?.length > 0 && !trackingOk);
+  if (performance.now() > flashUntil) flashEl.classList.remove('show');
+  if (performance.now() > formFlashUntil) formFlashEl.classList.remove('show');
+
+  // Stats HUD
+  exChip.textContent = session.exercise.name;
+  statScore.textContent = session.score;
+  statReps.textContent = session.reps;
+  statStreak.textContent = session.streak;
+  statLevel.textContent = session.level;
+  statAcc.textContent = `${session.accuracy()}%`;
+
+  // FPS
+  fpsTimes.push(t);
+  while (fpsTimes.length > 30) fpsTimes.shift();
+  if (fpsTimes.length > 1) {
+    const fps = (fpsTimes.length - 1) / ((fpsTimes[fpsTimes.length - 1] - fpsTimes[0]) / 1000);
+    fpsEl.textContent = `FPS: ${fps.toFixed(0)}`;
+  }
+
+  requestAnimationFrame(loop);
+}
+
+// Run the demo-card loop immediately, even before "Start camera" is
+// clicked -- it's the whole point of a reference animation that it's
+// visible before the person turns their camera on.
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

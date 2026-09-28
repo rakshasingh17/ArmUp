@@ -122,7 +122,7 @@ from PIL import Image, ImageDraw, ImageFont
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 
-from armup_engine import SessionState, EXERCISES, angle_at, MIN_VISIBILITY
+from armup_engine import SessionState, EXERCISES, angle_at, MIN_VISIBILITY, FORM_RULES
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--user", type=int, default=None)
@@ -440,7 +440,7 @@ def draw_accuracy_ring(canvas, session, cx, cy, radius=34):
     cv2.putText(canvas, f"{acc}%", (cx - 20, cy + 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_TEXT, 2, cv2.LINE_AA)
 
 
-def draw_hud_pil(canvas, session, feedback_flash, tracking_ok):
+def draw_hud_pil(canvas, session, feedback_flash, tracking_ok, form_flash=None):
     """
     Renders the HUD (exercise chip, stats, instructions, feedback flash)
     using PIL instead of cv2.putText/cv2.rectangle -- gives real anti-aliased
@@ -500,6 +500,16 @@ def draw_hud_pil(canvas, session, feedback_flash, tracking_ok):
         draw_card(draw, (cx - 20, 70, cx + int(tw) + 20, 118), radius=20, fill=card_fill)
         draw.text((cx, 78), text, font=FONT_HEAD, fill=text_fill)
 
+    # Form correction card, just below the rep flash -- always amber,
+    # since a form fault is never "good news" the way a clean rep is.
+    # Independent of feedback_flash: a rep and a fault can show at once.
+    if form_flash and time.time() < form_flash["until"]:
+        text = form_flash["text"]
+        tw = draw.textlength(text, font=FONT_HEAD)
+        cx = w // 2 - int(tw) // 2
+        draw_card(draw, (cx - 20, 126, cx + int(tw) + 20, 164), radius=18, fill=(45, 30, 20, 210))
+        draw.text((cx, 134), text, font=FONT_HEAD, fill=(255, 193, 94, 255))
+
     pil_img = Image.alpha_composite(pil_img, overlay)
     return to_cv2(pil_img.convert("RGB"))
 
@@ -546,6 +556,7 @@ session = SessionState(
     starting_tolerance=PLAN_TOLERANCE.get(initial_exercise),
 )
 feedback_flash = None
+form_flash = None
 last_frame_time = time.time()
 start_time = time.time()
 key_to_exercise = {ord('1'): "curl", ord('2'): "raise", ord('3'): "press", ord('4'): "neck_tilt"}
@@ -640,6 +651,20 @@ while cap.isOpened():
                 "until": time.time() + 1.0,
             }
 
+        # ---- form feedback: a SECOND, independent angle check per ----
+        # ---- exercise, flagging bad technique instead of counting a rep.
+        if tracking_ok:
+            form_angles = {}
+            for rule in FORM_RULES.get(session.exercise_key, []):
+                ra, rb, rc = rule["pts"]
+                if ra in frame_points and rb in frame_points and rc in frame_points:
+                    form_angles[rule["id"]] = angle_at(
+                        frame_points[ra], frame_points[rb], frame_points[rc]
+                    )
+            form_msg = session.check_form(form_angles)
+            if form_msg:
+                form_flash = {"text": form_msg, "until": time.time() + 1.5}
+
         angle_color = (200, 200, 200) if tracking_ok else (94, 193, 255)
         cv2.putText(canvas, f"Angle: {int(live_angle)} deg   Tol: +/-{session.tolerance:g}", (14, 70),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, angle_color, 1, cv2.LINE_AA)
@@ -657,7 +682,7 @@ while cap.isOpened():
         cv2.putText(canvas, f"FPS: {fps:.0f}", (14, 92),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
 
-    canvas = draw_hud_pil(canvas, session, feedback_flash, tracking_ok)
+    canvas = draw_hud_pil(canvas, session, feedback_flash, tracking_ok, form_flash)
     cv2.imshow("ArmUp", canvas)
 
     key = cv2.waitKey(5) & 0xFF

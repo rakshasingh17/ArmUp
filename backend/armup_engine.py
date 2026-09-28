@@ -63,6 +63,28 @@ CHANGE LOG (per-user starting tolerance):
   exercise's default tolerance from EXERCISES is used, as before.
 - Added a read-only `tolerance` property so the interface can display
   the tolerance currently in effect.
+
+CHANGE LOG (press accuracy fix -- rep completion never triggered):
+- "press" used to measure the angle at LEFT_SHOULDER between LEFT_HIP
+  and LEFT_WRIST -- i.e. the whole arm's angle relative to the torso,
+  treating shoulder->wrist as one straight line, with rest=30. A rest
+  angle of 30 degrees corresponds to the arm hanging almost straight
+  down at the side. That's not where a real press returns to between
+  reps: a real press racks the weight near the shoulder with the elbow
+  bent (roughly 90-130 degrees on that same landmark triangle), never
+  dropping the arm fully between reps. So near_rest could never become
+  True for someone using correct form, rep_state got stuck at "peak"
+  forever, and reps silently never completed.
+- Fixed by measuring elbow extension directly instead -- same landmark
+  pattern "curl" already uses (SHOULDER-ELBOW-WRIST) -- since a press
+  actually IS the elbow straightening to drive the hand overhead, and
+  this doesn't depend on exactly how high someone racks the weight.
+- rest=90/peak=172 are a starting estimate (bent ~90 -> near-locked
+  ~172), NOT physio-validated -- same caveat as FORM_RULES below. Test
+  against real reps and retune; if reps still won't complete, `rest`
+  is probably too low for how bent people actually rack the weight.
+  Keep this in sync with the JS port (engine.js) -- that file got the
+  identical change.
 """
 
 import math
@@ -92,8 +114,8 @@ EXERCISES = {
     },
     "press": {
         "name": "Shoulder Press",
-        "landmarks": ("LEFT_HIP", "LEFT_SHOULDER", "LEFT_WRIST"),
-        "rest": 30, "peak": 165, "tolerance": 15,
+        "landmarks": ("LEFT_SHOULDER", "LEFT_ELBOW", "LEFT_WRIST"),
+        "rest": 90, "peak": 172, "tolerance": 15,
         "rest_msg": "Reset lower", "peak_msg": "Full extension",
         "partial_msg": "Push all the way up",
     },
@@ -109,6 +131,40 @@ EXERCISES = {
         "partial_msg": "Tilt a bit further",
     },
 }
+
+# ---------------------------------------------------------------
+# Form feedback rules
+# ---------------------------------------------------------------
+# A SECOND, independent angle check per exercise -- separate from the
+# rest/peak angle that drives rep counting. It flags a common
+# compensation pattern (bad technique) instead of counting a rep, so a
+# rep can complete AND have a form fault flagged in the same frame.
+# "pts" are three landmark names (angle measured at the middle one),
+# same shape as EXERCISES["landmarks"] -- armup_app.py computes the
+# angle with the same angle_at() and passes it in keyed by rule "id".
+#
+# NOTE: these thresholds are estimates, not physio-validated values.
+# Report/demo them as prototype-level, same caveat as the rest of the
+# rep-detection tolerances.
+FORM_RULES = {
+    "curl": [
+        {"id": "elbow_drift", "pts": ("LEFT_HIP", "LEFT_SHOULDER", "LEFT_ELBOW"),
+         "max": 30, "msg": "Keep your elbow tucked in"},
+    ],
+    "raise": [
+        {"id": "too_high", "pts": ("LEFT_HIP", "LEFT_SHOULDER", "LEFT_ELBOW"),
+         "max": 100, "msg": "Stop at shoulder height"},
+    ],
+    "press": [
+        {"id": "lean_back", "pts": ("RIGHT_HIP", "LEFT_HIP", "LEFT_SHOULDER"),
+         "max": 110, "msg": "Don't lean back -- press straight up"},
+    ],
+}
+
+# How many CONSECUTIVE bad frames before a fault fires. Longer than
+# HOLD_FRAMES_REQUIRED on purpose -- form feedback should catch a
+# sustained lapse, not flicker on one noisy frame.
+FORM_HOLD_FRAMES = 8
 
 # How many CONSECUTIVE frames the angle must stay inside a target zone
 # before the rep state is allowed to transition. At ~20-30fps, 3-4 frames
@@ -158,12 +214,17 @@ class SessionState:
     # None -> use the exercise's default tolerance from EXERCISES.
     starting_tolerance: Optional[float] = None
 
+    # Form-fault counts for the CURRENT exercise: {rule_id: times fired}.
+    # Reset by reset_stats(), same lifecycle as reps/score/hit_log.
+    form_faults: dict = field(default_factory=dict)
+
     # --- debounce / attempt counters (not meant to be read from outside) ---
     _peak_hold: int = 0
     _rest_hold: int = 0
     _return_hold: int = 0          # consecutive frames back at rest (rest state)
     _attempt_progress: float = 0.0 # furthest 0..1 progress toward peak this attempt
     _armed: bool = False           # True once held at rest at least once
+    _form_bad: dict = field(default_factory=dict)  # {rule_id: consecutive bad frames}
 
     @property
     def exercise(self):
@@ -188,6 +249,7 @@ class SessionState:
             self._return_hold = 0
             self._attempt_progress = 0.0
             self._armed = False
+            self._form_bad = {}
 
     def reset_stats(self):
         """Zeroes out the accumulated scoring counters (reps, score,
@@ -205,6 +267,32 @@ class SessionState:
         self.max_streak = 0
         self.level = 1
         self.hit_log = []
+        self.form_faults = {}
+
+    def check_form(self, angles):
+        """
+        Checks the current exercise's FORM_RULES against a dict of
+        pre-computed angles ({rule_id: degrees}, built by armup_app.py
+        from each rule's three points via angle_at()). Independent of
+        rep counting -- a rep can complete AND have a form fault
+        flagged in the same frame; this never affects reps/score.
+
+        Returns a correction message (str) the instant a fault crosses
+        FORM_HOLD_FRAMES consecutive bad frames, else None. Uses '=='
+        rather than '>=' so it fires ONCE per lapse instead of nagging
+        every single frame the person stays in bad form.
+        """
+        for rule in FORM_RULES.get(self.exercise_key, []):
+            angle = angles.get(rule["id"])
+            if angle is None:
+                continue
+            bad = angle > rule["max"]
+            n = self._form_bad.get(rule["id"], 0) + 1 if bad else 0
+            self._form_bad[rule["id"]] = n
+            if n == FORM_HOLD_FRAMES:
+                self.form_faults[rule["id"]] = self.form_faults.get(rule["id"], 0) + 1
+                return rule["msg"]
+        return None
 
     def _progress(self, live_angle):
         """0 at the rest angle, 1 at the peak angle (can go outside 0..1)."""
@@ -407,3 +495,19 @@ if __name__ == "__main__":
     for angle in fake_neck_sequence:
         multi.update(angle)
     print(f"After neck tilts: reps={multi.reps} (should be 2, not mixed with curl reps)")
+
+    print("\n--- Form feedback test (curl elbow_drift) ---")
+    form = SessionState(exercise_key="curl")
+    # Elbow drift angle (LEFT_HIP-LEFT_SHOULDER-LEFT_ELBOW) held above the
+    # 30-degree max for FORM_HOLD_FRAMES straight frames -> should fire once.
+    msg = None
+    for _ in range(10):
+        msg = form.check_form({"elbow_drift": 45}) or msg
+    print(f"Fault message after 10 bad frames: '{msg}' (should be the elbow_drift msg)")
+    print(f"form_faults: {form.form_faults} (should be {{'elbow_drift': 1}})")
+    # Good form for a while shouldn't add another fault or re-fire.
+    msg2 = None
+    for _ in range(10):
+        msg2 = form.check_form({"elbow_drift": 10}) or msg2
+    print(f"No new fault while form is good: msg2={msg2} (should be None), "
+          f"form_faults still {form.form_faults} (should be unchanged)")
