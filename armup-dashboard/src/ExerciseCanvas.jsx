@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { EXERCISES } from './engine';
 import { drawExerciseHint, fitScale, RIG_BOUNDS } from './avatarDemo';
 import { UPPER_BODY_CONNECTIONS } from './usePoseSession';
+import { apiFetch } from './api';
 
 /*
  * ExerciseCanvas
@@ -29,9 +30,14 @@ const DEMO_CAPTIONS = {
 };
 
 const EXERCISE_ORDER = ['curl', 'raise', 'press', 'neck_tilt'];
+
+// A session is one guided set. Tune these numbers to taste:
+const SET_REPS = 10;        // a full set; the session saves itself when you reach it
+const MIN_SAVE_REPS = 5;    // stopping early with fewer reps than this saves nothing
+const COUNTDOWN_SECS = 3;   // "get in position" countdown before the set starts
 const KEY_MAP = { '1': 'curl', '2': 'raise', '3': 'press', '4': 'neck_tilt' };
 
-export default function ExerciseCanvas({ pose, userId, apiBase, onSessionSaved }) {
+export default function ExerciseCanvas({ pose, userId, onSessionSaved }) {
   const stageCanvasRef = useRef(null);
   const demoCanvasRef = useRef(null);
   const demoSizeRef = useRef({ w: 200, h: 200 });
@@ -40,7 +46,12 @@ export default function ExerciseCanvas({ pose, userId, apiBase, onSessionSaved }
   const [flash, setFlash] = useState(null);
   const [formFlash, setFormFlash] = useState(null);
   const [saving, setSaving] = useState(false);
-  const [saveMsg, setSaveMsg] = useState(null);
+  // Set flow: idle -> countdown -> active -> complete
+  const [phase, setPhase] = useState('idle');
+  const [count, setCount] = useState(COUNTDOWN_SECS);
+  const [confirmStop, setConfirmStop] = useState(false);
+  const [result, setResult] = useState(null);   // frozen summary of the finished set
+  const finishedRef = useRef(false);            // guards against saving one set twice
 
   const angleReadoutRef = useRef(null); // updated directly in the draw loop below, not via React state -- no need to re-render every frame for a debug number
 
@@ -55,10 +66,26 @@ export default function ExerciseCanvas({ pose, userId, apiBase, onSessionSaved }
   } = pose;
 
   useEffect(() => {
-    const onKey = (e) => { if (KEY_MAP[e.key]) setExercise(KEY_MAP[e.key]); };
+    const onKey = (e) => { if (phase === 'idle' && KEY_MAP[e.key]) setExercise(KEY_MAP[e.key]); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [setExercise]);
+  }, [setExercise, phase]);
+
+  // 3-2-1 countdown, then the set begins with fresh counters.
+  useEffect(() => {
+    if (phase !== 'countdown') return;
+    const id = setTimeout(() => {
+      if (count <= 1) {
+        resetStats();
+        finishedRef.current = false;
+        setPhase('active');
+      } else {
+        setCount(count - 1);
+      }
+    }, 1000);
+    return () => clearTimeout(id);
+  }, [phase, count, resetStats]);
+
 
   useEffect(() => {
     if (!feedback) return;
@@ -174,40 +201,85 @@ export default function ExerciseCanvas({ pose, userId, apiBase, onSessionSaved }
   }, [cameraOn, exerciseKey]);
 
   const handleSwitch = (key) => {
-    if (key === exerciseKey) return;
+    if (phase !== 'idle' || key === exerciseKey) return;
     setExercise(key);
   };
 
-  const handleEndSession = async () => {
-    if (stats.reps === 0) { resetStats(); return; }
+  const startSet = () => {
+    setResult(null);
+    setConfirmStop(false);
+    setCount(COUNTDOWN_SECS);
+    setPhase('countdown');
+  };
+
+  const cancelCountdown = () => setPhase('idle');
+
+  const postSession = async (final, exKey) => {
     setSaving(true);
-    setSaveMsg(null);
     try {
-      const res = await fetch(`${apiBase}/sessions`, {
+      const res = await apiFetch('/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           user_id: userId,
-          exercise_key: sessionRef.current.exerciseKey,
-          reps: stats.reps,
-          score: stats.score,
-          accuracy: stats.accuracy,
-          max_streak: stats.maxStreak,
-          level: stats.level,
+          exercise_key: exKey,
+          reps: final.reps,
+          score: final.score,
+          accuracy: final.accuracy,
+          max_streak: final.maxStreak,
+          level: final.level,
         }),
       });
       if (!res.ok) throw new Error(`Server responded ${res.status}`);
-      setSaveMsg('Session saved.');
-      resetStats();
       onSessionSaved?.();
+      return true;
     } catch (err) {
       console.error('Could not save session:', err);
-      setSaveMsg("Couldn't save -- is the backend running?");
+      return false;
     } finally {
       setSaving(false);
-      setTimeout(() => setSaveMsg(null), 3000);
     }
   };
+
+  // Ends the set. A full set always saves; an early stop saves only if it
+  // reached MIN_SAVE_REPS, so a couple of stray reps never become a session.
+  const finishSet = async (final, early) => {
+    if (finishedRef.current) return;
+    finishedRef.current = true;
+    const exKey = sessionRef.current.exerciseKey;
+    const willSave = !early || final.reps >= MIN_SAVE_REPS;
+    setConfirmStop(false);
+    setPhase('complete');
+    setResult({ ...final, exerciseKey: exKey, early, discarded: !willSave, saved: null });
+    if (willSave) {
+      const saved = await postSession(final, exKey);
+      setResult((r) => (r ? { ...r, saved } : r));
+    }
+  };
+
+  // Reaching the target ends the set and saves it automatically.
+  useEffect(() => {
+    if (phase === 'active' && stats.reps >= SET_REPS) finishSet(stats, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, stats.reps]);
+
+  const retrySave = async () => {
+    if (!result) return;
+    const saved = await postSession(result, result.exerciseKey);
+    setResult((r) => (r ? { ...r, saved } : r));
+  };
+
+  const nextExercise = () => {
+    const i = EXERCISE_ORDER.indexOf(result?.exerciseKey ?? exerciseKey);
+    setExercise(EXERCISE_ORDER[(i + 1) % EXERCISE_ORDER.length]);
+    setResult(null);
+    setPhase('idle');
+  };
+
+  const backToStart = () => { setResult(null); setPhase('idle'); };
+
+  // While a finished set's summary is up, the HUD shows its frozen numbers.
+  const shown = phase === 'complete' && result ? result : stats;
 
   return (
     <div className="exc-root">
@@ -240,6 +312,27 @@ export default function ExerciseCanvas({ pose, userId, apiBase, onSessionSaved }
         .exc-btn.active { background:var(--exc-accent); border-color:var(--exc-accent); color:#1B1035; font-weight:700; }
         .exc-btn.start { background:var(--exc-good); color:#10281c; font-weight:700; border:none; }
         .exc-btn:disabled { opacity:.5; cursor:default; }
+        .exc-progress { position:absolute; left:12px; right:12px; bottom:54px; }
+        .exc-progress-label { font-size:12px; font-weight:600; margin-bottom:4px; text-shadow:0 1px 3px #000a; }
+        .exc-progress-track { height:10px; background:#ffffff30; border-radius:6px; overflow:hidden; }
+        .exc-progress-fill { height:100%; background:var(--exc-good); border-radius:6px; transition:width .25s; }
+        .exc-ready { position:absolute; left:50%; bottom:58px; transform:translateX(-50%); width:min(92%, 420px); background:#241832ee; border:1px solid #ffffff30; border-radius:16px; padding:14px 18px; text-align:center; color:#F3F6FA; display:flex; flex-direction:column; align-items:center; gap:6px; }
+        .exc-ready-title { font-size:16px; font-weight:700; }
+        .exc-ready-sub { font-size:12px; color:#9AA8C4; margin-bottom:4px; }
+        .exc-countdown { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; color:#fff; pointer-events:none; text-shadow:0 2px 12px #000a; }
+        .exc-countdown span { font-size:110px; font-weight:800; line-height:1; }
+        .exc-countdown p { font-size:16px; margin-top:6px; }
+        .exc-overlay { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:#0d0714d9; padding:16px; }
+        .exc-card { width:min(100%, 440px); background:#241832; border:1px solid #ffffff30; border-radius:18px; padding:22px; text-align:center; color:#F3F6FA; }
+        .exc-card h3 { font-size:22px; font-weight:800; margin-bottom:6px; }
+        .exc-card p { font-size:13px; color:#C9D2E6; line-height:1.45; }
+        .exc-card .exc-card-ex { color:#9AA8C4; margin-bottom:14px; }
+        .exc-card-stats { display:grid; grid-template-columns:repeat(4, 1fr); gap:8px; margin-bottom:14px; }
+        .exc-card-stats div { background:#ffffff10; border-radius:12px; padding:10px 4px; display:flex; flex-direction:column; gap:2px; }
+        .exc-card-stats b { font-size:20px; color:var(--exc-limb); }
+        .exc-card-stats span { font-size:10px; text-transform:uppercase; color:#9AA8C4; }
+        .exc-card .exc-card-save { margin-bottom:14px; }
+        .exc-card-actions { display:flex; gap:8px; justify-content:center; flex-wrap:wrap; margin-top:12px; }
         .exc-status { margin-top:10px; font-size:12px; color:#8D8777; }
         .exc-status.err { color:#c94b4b; }
       `}</style>
@@ -250,11 +343,11 @@ export default function ExerciseCanvas({ pose, userId, apiBase, onSessionSaved }
           <div className="exc-hud">
             <div className="exc-chip">{EXERCISES[exerciseKey].name}</div>
             <div className="exc-stats">
-              <div><div className="val">{stats.score}</div><div className="lbl">Score</div></div>
-              <div><div className="val">{stats.reps}</div><div className="lbl">Reps</div></div>
-              <div><div className="val">{stats.streak}</div><div className="lbl">Streak</div></div>
-              <div><div className="val">{stats.level}</div><div className="lbl">Lvl</div></div>
-              <div><div className="val">{stats.accuracy}%</div><div className="lbl">Acc</div></div>
+              <div><div className="val">{shown.score}</div><div className="lbl">Score</div></div>
+              <div><div className="val">{shown.reps}</div><div className="lbl">Reps</div></div>
+              <div><div className="val">{shown.streak}</div><div className="lbl">Streak</div></div>
+              <div><div className="val">{shown.level}</div><div className="lbl">Lvl</div></div>
+              <div><div className="val">{shown.accuracy}%</div><div className="lbl">Acc</div></div>
             </div>
             <div className={`exc-warn${partiallyVisible ? ' show' : ''}`}>
               Step back / adjust lighting so your arm is clearly visible
@@ -263,6 +356,16 @@ export default function ExerciseCanvas({ pose, userId, apiBase, onSessionSaved }
               {flash?.text}
             </div>
             <div className={`exc-form-flash${formFlash ? ' show' : ''}`}>{formFlash?.text}</div>
+            {(phase === 'active' || phase === 'countdown') && (
+              <div className="exc-progress">
+                <div className="exc-progress-label">
+                  {phase === 'countdown' ? 'Get ready' : `Rep ${Math.min(stats.reps, SET_REPS)} of ${SET_REPS}`}
+                </div>
+                <div className="exc-progress-track">
+                  <div className="exc-progress-fill" style={{ width: `${phase === 'active' ? Math.min(100, (stats.reps / SET_REPS) * 100) : 0}%` }} />
+                </div>
+              </div>
+            )}
             <div className="exc-bar">
               <span>1 Curl &nbsp; 2 Lateral Raise &nbsp; 3 Shoulder Press &nbsp; 4 Neck Tilt</span>
               <span>
@@ -276,6 +379,62 @@ export default function ExerciseCanvas({ pose, userId, apiBase, onSessionSaved }
               <button className="exc-btn start" disabled={starting} onClick={startCamera}>
                 {starting ? 'Starting…' : 'Start camera'}
               </button>
+            </div>
+          )}
+          {cameraOn && phase === 'idle' && (
+            <div className="exc-ready">
+              <div className="exc-ready-title">{EXERCISES[exerciseKey].name}</div>
+              <div className="exc-ready-sub">One set = {SET_REPS} reps. Stand where your arm is fully in view.</div>
+              <button className="exc-btn start" onClick={startSet}>Start set</button>
+            </div>
+          )}
+          {phase === 'countdown' && (
+            <div className="exc-countdown"><span>{count}</span><p>Get into position</p></div>
+          )}
+          {confirmStop && (
+            <div className="exc-overlay">
+              <div className="exc-card">
+                <h3>Stop this set?</h3>
+                <p>
+                  {stats.reps >= MIN_SAVE_REPS
+                    ? `You've done ${stats.reps} of ${SET_REPS} reps. They'll be saved as a shorter session.`
+                    : `You've done ${stats.reps} of ${SET_REPS} reps. It takes at least ${MIN_SAVE_REPS} to save a session, so this one won't be saved.`}
+                </p>
+                <div className="exc-card-actions">
+                  <button className="exc-btn start" onClick={() => setConfirmStop(false)}>Keep going</button>
+                  <button className="exc-btn" onClick={() => finishSet(stats, true)}>Stop set</button>
+                </div>
+              </div>
+            </div>
+          )}
+          {phase === 'complete' && result && (
+            <div className="exc-overlay">
+              <div className="exc-card">
+                <h3>{result.discarded ? 'Set not saved' : result.early ? 'Set stopped early' : 'Set complete!'}</h3>
+                <p className="exc-card-ex">{EXERCISES[result.exerciseKey].name} · {result.reps} of {SET_REPS} reps</p>
+                <div className="exc-card-stats">
+                  <div><b>{result.score}</b><span>Score</span></div>
+                  <div><b>{result.accuracy}%</b><span>Accuracy</span></div>
+                  <div><b>{result.maxStreak}</b><span>Best streak</span></div>
+                  <div><b>{result.level}</b><span>Level</span></div>
+                </div>
+                <p className="exc-card-save">
+                  {result.discarded
+                    ? `Fewer than ${MIN_SAVE_REPS} reps, so nothing was recorded.`
+                    : saving || result.saved === null
+                      ? 'Saving your session…'
+                      : result.saved
+                        ? 'Saved to your session log.'
+                        : "Couldn't save this session."}
+                </p>
+                <div className="exc-card-actions">
+                  {!result.discarded && result.saved === false && (
+                    <button className="exc-btn" disabled={saving} onClick={retrySave}>Try saving again</button>
+                  )}
+                  <button className="exc-btn start" onClick={nextExercise}>Next exercise</button>
+                  <button className="exc-btn" onClick={backToStart}>Repeat this one</button>
+                </div>
+              </div>
             </div>
           )}
         </div>
@@ -293,19 +452,22 @@ export default function ExerciseCanvas({ pose, userId, apiBase, onSessionSaved }
           <button
             key={key}
             className={`exc-btn${key === exerciseKey ? ' active' : ''}`}
+            disabled={phase !== 'idle'}
             onClick={() => handleSwitch(key)}
           >
             {i + 1}. {EXERCISES[key].name}
           </button>
         ))}
-        <button className="exc-btn" disabled={saving} onClick={handleEndSession}>
-          {saving ? 'Saving…' : 'End session & save'}
-        </button>
+        {phase === 'countdown' && (
+          <button className="exc-btn" onClick={cancelCountdown}>Cancel</button>
+        )}
+        {phase === 'active' && (
+          <button className="exc-btn" onClick={() => setConfirmStop(true)}>Stop set</button>
+        )}
       </div>
 
       <p className={`exc-status${error ? ' err' : ''}`}>
         {error ? `${status} (${error})` : status}
-        {saveMsg ? ` -- ${saveMsg}` : ''}
         {!trackingOk && cameraOn && !partiallyVisible ? ' -- no one detected in frame yet.' : ''}
       </p>
     </div>

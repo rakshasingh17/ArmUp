@@ -1,5 +1,6 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { EXERCISES } from './engine';
+import { apiFetch } from './api';
 
 /*
  * GameCanvas
@@ -23,16 +24,48 @@ const ASSETS = {
   idle: '/game/wizard/idle.png',
   takeHit: '/game/wizard/take-hit.png',
   death: '/game/wizard/death.png',
+  attack: '/game/wizard/attack.png',
 };
 
-// Fight tuning. Each correct rep = 1 damage. Every villain you beat is
-// a bit tougher than the last, capped so it never becomes a slog.
-const BASE_VILLAIN_HP = 10;
-const HP_PER_VILLAIN = 2;
-const MAX_VILLAIN_HP = 20;
+// One villain = one guided session (same discipline as Exercise mode).
+// Every correct rep is 1 damage; the session saves itself when the villain
+// falls. Retreating early saves only if you landed MIN_SAVE_REPS hits.
+const MIN_SAVE_REPS = 5;
+const COUNTDOWN_SECS = 3;
 const REPS_PER_LEVEL = 5; // matches SessionState._maybeLevelUp in engine.js
+const HP_PER_ROUND = 2;   // each full campaign run makes every villain a bit tougher
+const MAX_HP = 16;
+const MAX_BOSS_HP = 20;
 
-const EXERCISE_ORDER = ['curl', 'raise', 'press', 'neck_tilt'];
+// Same wizard sprite, recoloured with a canvas filter -- no new artwork needed.
+// Each villain is weak to one exercise, so the campaign walks through all four.
+const VILLAINS = [
+  { id: 'wizard', name: 'Evil Wizard', exercise: 'curl', hp: 10, scale: 2, filter: 'none',
+    taunt: 'You dare enter my cave?' },
+  { id: 'frost', name: 'Frost Warlock', exercise: 'raise', hp: 10, scale: 2,
+    filter: 'hue-rotate(150deg) saturate(1.2)', taunt: 'Your arms will freeze before mine!' },
+  { id: 'ember', name: 'Ember Mage', exercise: 'press', hp: 10, scale: 2,
+    filter: 'hue-rotate(-50deg) saturate(1.6) brightness(1.1)', taunt: 'Feel the heat of my fire!' },
+  { id: 'shade', name: 'Shadow Hexer', exercise: 'neck_tilt', hp: 10, scale: 2,
+    filter: 'hue-rotate(250deg) brightness(0.55) saturate(1.3)', taunt: 'Shadows cannot be stretched away...' },
+  { id: 'archlich', name: 'The Archlich', exercise: 'press', hp: 14, scale: 2.5, boss: true,
+    filter: 'hue-rotate(80deg) brightness(0.75) saturate(1.8)', taunt: 'Bow before the Archlich!' },
+];
+
+const progressKey = (userId) => `armup.game.progress.${userId ?? 'guest'}`;
+function loadProgress(userId) {
+  try {
+    const p = JSON.parse(localStorage.getItem(progressKey(userId)) || 'null');
+    if (p && Number.isInteger(p.index) && Number.isInteger(p.round)) {
+      return { index: Math.min(Math.max(p.index, 0), VILLAINS.length - 1), round: Math.max(p.round, 0) };
+    }
+  } catch { /* storage unavailable -- start fresh */ }
+  return { index: 0, round: 0 };
+}
+function saveProgress(userId, p) {
+  try { localStorage.setItem(progressKey(userId), JSON.stringify(p)); } catch { /* ignore */ }
+}
+const villainHp = (v, round) => Math.min(v.hp + HP_PER_ROUND * round, v.boss ? MAX_BOSS_HP : MAX_HP);
 
 function useImage(src) {
   const [img, setImg] = useState(null);
@@ -211,6 +244,20 @@ function drawImpactBurst(ctx, x, y, age) {
   ctx.restore();
 }
 
+function drawDamageNumber(ctx, x, y, age, text) {
+  if (age >= 1) return;
+  ctx.save();
+  ctx.globalAlpha = 1 - age;
+  ctx.font = 'bold 28px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = 'rgba(20,8,30,0.8)';
+  ctx.strokeText(text, x, y - age * 60);
+  ctx.fillStyle = '#ffd36b';
+  ctx.fillText(text, x, y - age * 60);
+  ctx.restore();
+}
+
 function roundRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
   ctx.moveTo(x + r, y);
@@ -223,13 +270,13 @@ function roundRect(ctx, x, y, w, h, r) {
 
 // Boss bar: `shown` is the smoothly-draining value, `hp` the real one --
 // the pale "ghost" segment between them is the classic damage-trail.
-function drawBossBar(ctx, name, shown, hp, maxHp, t, flash) {
+function drawBossBar(ctx, name, shown, hp, maxHp, t, flash, boss) {
   const w = 360, h = 20, x = (CANVAS_W - w) / 2, y = 34;
   ctx.save();
   ctx.font = 'bold 14px sans-serif';
   ctx.textAlign = 'center';
   ctx.fillStyle = '#fff';
-  ctx.fillText(`${name}  ${hp}/${maxHp}`, CANVAS_W / 2, y - 8);
+  ctx.fillText(`${boss ? '\u2605 ' : ''}${name}  ${hp}/${maxHp}`, CANVAS_W / 2, y - 8);
 
   ctx.fillStyle = 'rgba(15,8,25,0.75)';
   roundRect(ctx, x - 3, y - 3, w + 6, h + 6, 10); ctx.fill();
@@ -275,15 +322,14 @@ function drawXpBar(ctx, level, reps, score) {
   ctx.restore();
 }
 
-export default function GameCanvas({ pose, userId, apiBase, onSessionSaved }) {
+export default function GameCanvas({ pose, userId, onSessionSaved }) {
   const canvasRef = useRef(null);
   const rafRef = useRef(null);
   const [saving, setSaving] = useState(false);
-  const [saveMsg, setSaveMsg] = useState(null);
 
   const {
     poseCanvasRef, progressRef, liveAngleRef, sessionRef,
-    exerciseKey, setExercise,
+    setExercise,
     cameraOn, starting, startCamera,
     stats, resetStats, getSnapshot,
     feedback, error: cameraError,
@@ -297,43 +343,89 @@ export default function GameCanvas({ pose, userId, apiBase, onSessionSaved }) {
   const idleSheet = useSpriteSheet(ASSETS.idle, 150, 150, 8);
   const takeHitSheet = useSpriteSheet(ASSETS.takeHit, 150, 150, 4);
   const deathSheet = useSpriteSheet(ASSETS.death, 150, 150, 5);
+  const attackSheet = useSpriteSheet(ASSETS.attack, 150, 150, 8);
+
+  // Campaign: which villain is next, and how many full runs are done.
+  const [progress, setProgress] = useState(() => loadProgress(userId));
+  const villain = VILLAINS[progress.index];
+  const maxHp = villainHp(villain, progress.round);
+
+  // Battle flow: idle -> countdown -> fighting -> complete
+  const [phase, setPhase] = useState('idle');
+  const [count, setCount] = useState(COUNTDOWN_SECS);
+  const [confirmStop, setConfirmStop] = useState(false);
+  const [result, setResult] = useState(null);
+  const finishedRef = useRef(false);   // guards against saving one fight twice
+
+  // Mirrors of React state, read every frame / in event handlers.
+  const phaseRef = useRef('idle');
+  const villainRef = useRef(villain);
+  useEffect(() => { phaseRef.current = phase; villainRef.current = villain; });
 
   // Fight state lives in refs (read every frame by the draw loop).
-  // `defeated` / `villainsDefeated` are React state only because the
-  // victory overlay is DOM and needs to re-render when they change.
-  const hpRef = useRef(BASE_VILLAIN_HP);
-  const maxHpRef = useRef(BASE_VILLAIN_HP);
-  const shownHpRef = useRef(BASE_VILLAIN_HP);   // smoothed, for the drain animation
+  const hpRef = useRef(maxHp);
+  const maxHpRef = useRef(maxHp);
+  const shownHpRef = useRef(maxHp);   // smoothed, for the drain animation
   const hitFlashRef = useRef(0);
-  const [defeated, setDefeated] = useState(false);
-  const [villainsDefeated, setVillainsDefeated] = useState(0);
-  const wizardStateRef = useRef('idle'); // 'idle' | 'takeHit' | 'dying' | 'dead'
+  const wizardStateRef = useRef('idle'); // 'idle' | 'takeHit' | 'attack' | 'dying' | 'dead'
   const wizardPlayheadRef = useRef(0);
+  const nextAttackAtRef = useRef(0);
   const lastFrameTimeRef = useRef(null);
   const impactRef = useRef(null);
+  const dmgNumsRef = useRef([]);
+  const finalStatsRef = useRef(null);  // frozen at the killing blow
+
+  // Each villain is weak to one exercise -- lock the camera session to it.
+  useEffect(() => {
+    if (phase === 'idle') setExercise(villain.exercise);
+  }, [villain, phase, setExercise]);
+
+  // Put the health bar back to full whenever a new fight is set up.
+  const resetFight = () => {
+    hpRef.current = maxHp;
+    maxHpRef.current = maxHp;
+    shownHpRef.current = maxHp;
+    wizardStateRef.current = 'idle';
+    wizardPlayheadRef.current = 0;
+    nextAttackAtRef.current = performance.now() + 4000;
+    dmgNumsRef.current = [];
+    impactRef.current = null;
+  };
+
+  // Keep the idle-screen bar in sync with the chosen villain.
+  useEffect(() => {
+    if (phase === 'idle') {
+      hpRef.current = maxHp; maxHpRef.current = maxHp; shownHpRef.current = maxHp;
+      wizardStateRef.current = 'idle';
+    }
+  }, [phase, maxHp, villain]);
 
   const orbStartX = 260;
   const orbEndX = CANVAS_W - 260;
   const orbY = CANVAS_H - 150;
-  const wizardX = CANVAS_W - 340;
-  const wizardY = CANVAS_H - 300;
-  const wizardScale = 2;
   const playerBox = { x: 60, y: CANVAS_H - 260, w: 220, h: 260 };
 
-  // A correct rep = one hit on the villain. The last hit plays the
-  // death animation instead of the flinch.
+  // A correct rep = one hit, but only while a fight is actually running.
   const landHit = () => {
+    if (phaseRef.current !== 'fighting') return;
     if (wizardStateRef.current === 'dying' || wizardStateRef.current === 'dead') return;
     hpRef.current = Math.max(0, hpRef.current - 1);
     wizardPlayheadRef.current = 0;
     hitFlashRef.current = 1;
-    impactRef.current = { x: orbEndX, y: orbY, startedAt: performance.now() };
-    wizardStateRef.current = hpRef.current === 0 ? 'dying' : 'takeHit';
+    const now = performance.now();
+    impactRef.current = { x: orbEndX, y: orbY, startedAt: now };
+    const streak = getSnapshot().streak;
+    dmgNumsRef.current.push({ x: orbEndX + 40, y: orbY - 70, startedAt: now, text: streak >= 5 ? '-1 COMBO!' : '-1' });
+    if (hpRef.current === 0) {
+      finalStatsRef.current = getSnapshot();   // freeze the numbers at the killing blow
+      wizardStateRef.current = 'dying';
+    } else {
+      wizardStateRef.current = 'takeHit';
+    }
   };
 
-  // The hook keeps its last feedback event around, so without this a
-  // stale rep_complete from Exercise mode would land a phantom hit the
-  // moment Game mode mounts. Only react to events newer than mount.
+  // The hook keeps its last feedback event around, so only react to events
+  // newer than mount (otherwise a stale rep from Exercise mode would hit).
   const lastFeedbackAtRef = useRef(feedback?.at ?? null);
   useEffect(() => {
     if (!feedback || feedback.at === lastFeedbackAtRef.current) return;
@@ -342,16 +434,104 @@ export default function GameCanvas({ pose, userId, apiBase, onSessionSaved }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [feedback]);
 
-  const nextVillain = () => {
-    const n = villainsDefeated;   // already incremented when the last one fell
-    const hp = Math.min(BASE_VILLAIN_HP + HP_PER_VILLAIN * n, MAX_VILLAIN_HP);
-    maxHpRef.current = hp;
-    hpRef.current = hp;
-    shownHpRef.current = hp;
-    wizardStateRef.current = 'idle';
-    wizardPlayheadRef.current = 0;
-    setDefeated(false);
+  // 3-2-1 countdown, then the fight begins with fresh counters.
+  useEffect(() => {
+    if (phase !== 'countdown') return;
+    const id = setTimeout(() => {
+      if (count <= 1) {
+        resetStats();
+        resetFight();
+        finishedRef.current = false;
+        setPhase('fighting');
+      } else {
+        setCount(count - 1);
+      }
+    }, 1000);
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, count]);
+
+  const postSession = async (final, exKey) => {
+    setSaving(true);
+    try {
+      const res = await apiFetch('/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: userId,
+          exercise_key: exKey,
+          reps: final.reps,
+          score: final.score,
+          accuracy: final.accuracy,
+          max_streak: final.maxStreak,
+          level: final.level,
+        }),
+      });
+      if (!res.ok) throw new Error(`Server responded ${res.status}`);
+      onSessionSaved?.();
+      return true;
+    } catch (err) {
+      console.error('Could not save session:', err);
+      return false;
+    } finally {
+      setSaving(false);
+    }
   };
+
+  // Ends the fight. A win always saves; a retreat saves only if it reached
+  // MIN_SAVE_REPS, so a couple of stray reps never become a session.
+  const finishBattle = async (final, won) => {
+    if (finishedRef.current) return;
+    finishedRef.current = true;
+    const v = villainRef.current;
+    const exKey = sessionRef.current.exerciseKey;
+    const frozen = { ...final, reps: won ? Math.min(final.reps, maxHpRef.current) : final.reps };
+    const willSave = won || frozen.reps >= MIN_SAVE_REPS;
+    setConfirmStop(false);
+    setPhase('complete');
+    setResult({ ...frozen, exerciseKey: exKey, won, villainName: v.name, boss: !!v.boss, total: maxHpRef.current, discarded: !willSave, saved: null });
+    if (won) {
+      // Advance the campaign only when the villain actually falls.
+      const nextIndex = progress.index + 1;
+      const next = nextIndex >= VILLAINS.length
+        ? { index: 0, round: progress.round + 1 }
+        : { index: nextIndex, round: progress.round };
+      saveProgress(userId, next);
+      setNextProgress(next);
+    }
+    if (willSave) {
+      const saved = await postSession(frozen, exKey);
+      setResult((r) => (r ? { ...r, saved } : r));
+    }
+  };
+  const [nextProgress, setNextProgress] = useState(null);
+  const finishBattleRef = useRef(finishBattle);
+  useEffect(() => { finishBattleRef.current = finishBattle; });
+
+  const retrySave = async () => {
+    if (!result) return;
+    const saved = await postSession(result, result.exerciseKey);
+    setResult((r) => (r ? { ...r, saved } : r));
+  };
+
+  const startBattle = () => {
+    setResult(null);
+    setNextProgress(null);
+    setConfirmStop(false);
+    resetFight();
+    setCount(COUNTDOWN_SECS);
+    setPhase('countdown');
+  };
+  const cancelCountdown = () => setPhase('idle');
+
+  // After a win: move on to the next villain. (A retreat just lets you retry.)
+  const goNextVillain = () => {
+    if (nextProgress) setProgress(nextProgress);
+    setNextProgress(null);
+    setResult(null);
+    setPhase('idle');
+  };
+  const backToStart = () => { setResult(null); setNextProgress(null); setPhase('idle'); };
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -363,61 +543,79 @@ export default function GameCanvas({ pose, userId, apiBase, onSessionSaved }) {
       lastFrameTimeRef.current = t;
       wizardPlayheadRef.current += dt;
 
+      const v = villainRef.current;
+      const drawSize = 150 * v.scale;
+      const wizardX = 770 - drawSize / 2;
+      const wizardY = CANVAS_H - drawSize;
+
       ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
       drawBackground(ctx, sky, main, fg, anyBgFailed, t);
 
       drawPlayerBox(ctx, poseCanvasRef.current, playerBox.x, playerBox.y, playerBox.w, playerBox.h, cameraOn);
 
-      if (wizardStateRef.current === 'dying' || wizardStateRef.current === 'dead') {
+      // Villain sprite, tinted per villain via the canvas filter.
+      ctx.save();
+      ctx.filter = v.filter;
+      const state = wizardStateRef.current;
+      if (state === 'dying' || state === 'dead') {
         const { finished } = drawSpriteFrame(
-          ctx, deathSheet, wizardX, wizardY, wizardScale,
-          wizardPlayheadRef.current, 8, false, true
+          ctx, deathSheet, wizardX, wizardY, v.scale, wizardPlayheadRef.current, 8, false, true
         );
-        if (finished && wizardStateRef.current === 'dying') {
+        if (finished && state === 'dying') {
           wizardStateRef.current = 'dead';
-          setVillainsDefeated((n) => n + 1);
-          setDefeated(true);
+          finishBattleRef.current(finalStatsRef.current || getSnapshot(), true);
         }
-      } else if (wizardStateRef.current === 'takeHit') {
+      } else if (state === 'takeHit') {
         const { finished } = drawSpriteFrame(
-          ctx, takeHitSheet, wizardX, wizardY, wizardScale,
-          wizardPlayheadRef.current, 10, false, true
+          ctx, takeHitSheet, wizardX, wizardY, v.scale, wizardPlayheadRef.current, 10, false, true
+        );
+        if (finished) { wizardStateRef.current = 'idle'; wizardPlayheadRef.current = 0; }
+      } else if (state === 'attack') {
+        const { finished } = drawSpriteFrame(
+          ctx, attackSheet, wizardX, wizardY, v.scale, wizardPlayheadRef.current, 10, false, true
         );
         if (finished) {
           wizardStateRef.current = 'idle';
           wizardPlayheadRef.current = 0;
+          nextAttackAtRef.current = t + 5000 + Math.random() * 3000;
         }
       } else {
         drawSpriteFrame(
-          ctx, idleSheet, wizardX, wizardY, wizardScale,
-          wizardPlayheadRef.current, 8, true, true
+          ctx, idleSheet, wizardX, wizardY, v.scale, wizardPlayheadRef.current, 8, true, true
         );
+        // Purely cosmetic taunt: the villain swings at you now and then.
+        if (phaseRef.current === 'fighting' && t > nextAttackAtRef.current) {
+          wizardStateRef.current = 'attack';
+          wizardPlayheadRef.current = 0;
+        }
       }
+      ctx.restore();
 
       // Once dead, the orb has nothing to fly at.
       const alive = wizardStateRef.current !== 'dying' && wizardStateRef.current !== 'dead';
-      const progress = cameraOn && alive ? progressRef.current : 0;
-      const orbX = orbStartX + (orbEndX - orbStartX) * progress;
-      drawOrb(ctx, orbX, orbY, progress, t);
+      const fighting = phaseRef.current === 'fighting';
+      const progressVal = cameraOn && alive && fighting ? progressRef.current : 0;
+      const orbX = orbStartX + (orbEndX - orbStartX) * progressVal;
+      drawOrb(ctx, orbX, orbY, progressVal, t);
 
       if (impactRef.current) {
         const age = (t - impactRef.current.startedAt) / 500;
         drawImpactBurst(ctx, impactRef.current.x, impactRef.current.y, age);
         if (age >= 1) impactRef.current = null;
       }
+      dmgNumsRef.current = dmgNumsRef.current.filter((d) => {
+        const age = (performance.now() - d.startedAt) / 800;
+        drawDamageNumber(ctx, d.x, d.y, age, d.text);
+        return age < 1;
+      });
 
-      // Health + XP bars. Displayed HP eases toward the real value so
-      // damage drains instead of snapping.
       shownHpRef.current += (hpRef.current - shownHpRef.current) * 0.08;
       hitFlashRef.current = Math.max(0, hitFlashRef.current - 0.08);
-      drawBossBar(ctx, 'Evil Wizard', shownHpRef.current, hpRef.current, maxHpRef.current, t, hitFlashRef.current);
+      drawBossBar(ctx, v.name, shownHpRef.current, hpRef.current, maxHpRef.current, t, hitFlashRef.current, v.boss);
       const snap = getSnapshot();
       drawXpBar(ctx, snap.level, snap.reps, snap.score);
 
-      // Debug angle readout -- for tuning EXERCISES.rest/peak in
-      // engine.js against your actual camera setup (see engine.js's
-      // press comment). Drawn directly on canvas since this component
-      // has no HTML HUD.
+      // Debug angle readout -- for tuning EXERCISES.rest/peak in engine.js.
       if (cameraOn) {
         const ex = EXERCISES[sessionRef.current.exerciseKey];
         const live = liveAngleRef.current;
@@ -436,38 +634,12 @@ export default function GameCanvas({ pose, userId, apiBase, onSessionSaved }) {
     rafRef.current = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(rafRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sky, main, fg, anyBgFailed, idleSheet, takeHitSheet, deathSheet, cameraOn]);
+  }, [sky, main, fg, anyBgFailed, idleSheet, takeHitSheet, deathSheet, attackSheet, cameraOn]);
 
-  const handleEndSession = async () => {
-    if (stats.reps === 0) { resetStats(); return; }
-    setSaving(true);
-    setSaveMsg(null);
-    try {
-      const res = await fetch(`${apiBase}/sessions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          user_id: userId,
-          exercise_key: sessionRef.current.exerciseKey,
-          reps: stats.reps,
-          score: stats.score,
-          accuracy: stats.accuracy,
-          max_streak: stats.maxStreak,
-          level: stats.level,
-        }),
-      });
-      if (!res.ok) throw new Error(`Server responded ${res.status}`);
-      setSaveMsg('Session saved.');
-      resetStats();
-      onSessionSaved?.();
-    } catch (err) {
-      console.error('Could not save session:', err);
-      setSaveMsg("Couldn't save -- is the backend running?");
-    } finally {
-      setSaving(false);
-      setTimeout(() => setSaveMsg(null), 3000);
-    }
-  };
+  const exName = EXERCISES[villain.exercise].name;
+  const shown = phase === 'complete' && result ? result : stats;
+  const btnPrimary = 'font-display px-5 py-2.5 rounded-full bg-[#5CE0A0] text-[#10281c] font-semibold disabled:opacity-60';
+  const btnGhost = 'font-display px-4 py-2 rounded-full bg-white/15 border border-white/30 disabled:opacity-60';
 
   return (
     <div className="w-full">
@@ -481,75 +653,151 @@ export default function GameCanvas({ pose, userId, apiBase, onSessionSaved }) {
           height={CANVAS_H}
           style={{ width: '100%', height: '100%', display: 'block' }}
         />
+
         {!cameraOn && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/50 px-8 text-center">
-            {cameraError && (
-              <p className="max-w-md text-sm text-[#ffb4b4]">{cameraError}</p>
-            )}
-            <button
-              onClick={startCamera}
-              disabled={starting}
-              className="font-display px-5 py-2.5 rounded-full bg-[#5CE0A0] text-[#10281c] font-semibold disabled:opacity-60"
-            >
+            {cameraError && <p className="max-w-md text-sm text-[#ffb4b4]">{cameraError}</p>}
+            <button onClick={startCamera} disabled={starting} className={btnPrimary}>
               {starting ? 'Starting…' : 'Start camera & cast spells'}
             </button>
           </div>
         )}
-        {defeated && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 text-white text-center gap-3">
-            <p className="font-display text-3xl font-semibold">Villain defeated!</p>
-            <p className="text-sm text-white/80">
-              {villainsDefeated} down · {stats.score} XP · level {stats.level}
-            </p>
-            <p className="text-xs text-white/60">
-              Next one has {Math.min(BASE_VILLAIN_HP + HP_PER_VILLAIN * villainsDefeated, MAX_VILLAIN_HP)} HP
-            </p>
-            <div className="flex gap-2 mt-1">
-              <button
-                onClick={nextVillain}
-                className="font-display px-4 py-2 rounded-full bg-[#5CE0A0] text-[#10281c] font-semibold"
-              >
-                Next villain
-              </button>
-              <button
-                onClick={async () => { await handleEndSession(); nextVillain(); }}
-                disabled={saving}
-                className="font-display px-4 py-2 rounded-full bg-white/15 border border-white/30 disabled:opacity-60"
-              >
-                {saving ? 'Saving…' : 'Save session & continue'}
-              </button>
+
+        {cameraOn && phase === 'idle' && (
+          <div className="absolute inset-x-0 bottom-6 flex justify-center px-4">
+            <div className="w-full max-w-md bg-[#241832]/95 border border-white/20 rounded-2xl px-5 py-4 text-center text-white flex flex-col items-center gap-1.5">
+              <p className="font-display text-lg font-semibold">
+                {villain.boss ? '\u2605 Boss: ' : ''}{villain.name}
+              </p>
+              <p className="text-xs italic text-white/70">“{villain.taunt}”</p>
+              <p className="text-xs text-white/80">
+                Weak to <b>{exName}</b> · {maxHp} hits to defeat
+              </p>
+              <button onClick={startBattle} className={`${btnPrimary} mt-1`}>Start battle</button>
             </div>
           </div>
         )}
+
+        {phase === 'countdown' && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center text-white pointer-events-none" style={{ textShadow: '0 2px 12px #000a' }}>
+            <span className="text-[110px] font-extrabold leading-none">{count}</span>
+            <p className="text-base mt-1">Get into position — {exName}</p>
+          </div>
+        )}
+
+        {phase === 'fighting' && (
+          <div className="absolute left-3 right-3 bottom-3 pointer-events-none">
+            <div className="text-xs font-semibold text-white mb-1" style={{ textShadow: '0 1px 3px #000a' }}>
+              Hit {Math.min(stats.reps, maxHp)} of {maxHp}
+            </div>
+            <div className="h-2.5 bg-white/25 rounded-md overflow-hidden">
+              <div className="h-full bg-[#5CE0A0] rounded-md transition-all" style={{ width: `${Math.min(100, (stats.reps / maxHp) * 100)}%` }} />
+            </div>
+          </div>
+        )}
+
+        {confirmStop && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/70 p-4">
+            <div className="w-full max-w-sm bg-[#241832] border border-white/20 rounded-2xl p-5 text-center text-white">
+              <h3 className="font-display text-xl font-semibold mb-1">Retreat from this fight?</h3>
+              <p className="text-sm text-white/75">
+                {stats.reps >= MIN_SAVE_REPS
+                  ? `You've landed ${stats.reps} of ${maxHp} hits. They'll be saved as a shorter session.`
+                  : `You've landed ${stats.reps} of ${maxHp} hits. It takes at least ${MIN_SAVE_REPS} to save a session, so this one won't be saved.`}
+              </p>
+              <div className="flex gap-2 justify-center mt-4">
+                <button onClick={() => setConfirmStop(false)} className={btnPrimary}>Keep fighting</button>
+                <button onClick={() => finishBattle(getSnapshot(), false)} className={btnGhost}>Retreat</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {phase === 'complete' && result && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/65 p-4">
+            <div className="w-full max-w-md bg-[#241832] border border-white/20 rounded-2xl p-5 text-center text-white">
+              <h3 className="font-display text-2xl font-semibold">
+                {result.won ? (result.boss ? 'Boss defeated!' : 'Villain defeated!') : result.discarded ? 'Fight not saved' : 'You retreated'}
+              </h3>
+              <p className="text-sm text-white/70 mb-3">
+                {result.villainName} · {result.reps} of {result.total} hits
+              </p>
+              <div className="grid grid-cols-4 gap-2 mb-3">
+                {[['Score', result.score], ['Accuracy', `${result.accuracy}%`], ['Best streak', result.maxStreak], ['Level', result.level]].map(([lbl, val]) => (
+                  <div key={lbl} className="bg-white/10 rounded-xl py-2.5 flex flex-col">
+                    <b className="text-xl text-[#3FE0D0]">{val}</b>
+                    <span className="text-[10px] uppercase text-white/60">{lbl}</span>
+                  </div>
+                ))}
+              </div>
+              <p className="text-sm text-white/80">
+                {result.discarded
+                  ? `Fewer than ${MIN_SAVE_REPS} hits, so nothing was recorded.`
+                  : saving || result.saved === null
+                    ? 'Saving your session…'
+                    : result.saved ? 'Saved to your session log.' : "Couldn't save this session."}
+              </p>
+              {result.won && nextProgress && (
+                <p className="text-xs text-white/60 mt-1">
+                  Up next: {VILLAINS[nextProgress.index].name}
+                  {nextProgress.index === 0 && nextProgress.round > progress.round ? ' (campaign complete — harder round!)' : ''}
+                </p>
+              )}
+              <div className="flex gap-2 justify-center flex-wrap mt-4">
+                {!result.discarded && result.saved === false && (
+                  <button onClick={retrySave} disabled={saving} className={btnGhost}>Try saving again</button>
+                )}
+                {result.won ? (
+                  <>
+                    <button onClick={goNextVillain} className={btnPrimary}>Next villain</button>
+                    <button onClick={() => { setNextProgress(null); setResult(null); setPhase('idle'); }} className={btnGhost}>Rematch</button>
+                  </>
+                ) : (
+                  <button onClick={backToStart} className={btnPrimary}>Fight again</button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="absolute top-3 right-3 flex gap-3 bg-black/50 rounded-xl px-3 py-2 text-white text-xs">
-          <span><b>{stats.score}</b> score</span>
-          <span><b>{stats.reps}</b> reps</span>
-          <span><b>{stats.streak}</b> streak</span>
+          <span><b>{shown.score}</b> score</span>
+          <span><b>{shown.reps}</b> reps</span>
+          <span><b>{shown.streak}</b> streak</span>
         </div>
       </div>
 
       <div className="flex items-center gap-2 mt-3 flex-wrap">
-        <span className="text-xs text-[#8D8777] whitespace-nowrap mr-1">Casting exercise:</span>
-        {EXERCISE_ORDER.map((key) => (
-          <button
-            key={key}
-            onClick={() => setExercise(key)}
-            className={`font-display text-xs px-3 py-1.5 rounded-full transition-colors ${
-              exerciseKey === key ? 'bg-[#17140F] text-[#E9E4D6]' : 'bg-white border border-[#E7E2D4] text-[#8D8777]'
-            }`}
-          >
-            {EXERCISES[key].name}
+        <span className="text-xs text-[#8D8777] whitespace-nowrap mr-1">
+          Campaign{progress.round > 0 ? ` · round ${progress.round + 1}` : ''}:
+        </span>
+        {VILLAINS.map((v, i) => {
+          const done = i < progress.index;
+          const current = i === progress.index;
+          return (
+            <span
+              key={v.id}
+              className={`font-display text-xs px-3 py-1.5 rounded-full ${
+                current ? 'bg-[#17140F] text-[#E9E4D6]'
+                  : done ? 'bg-[#E3F4EA] border border-[#BFE3CD] text-[#2f6b4a]'
+                    : 'bg-white border border-[#E7E2D4] text-[#B5AF9F]'
+              }`}
+            >
+              {done ? '\u2713 ' : v.boss ? '\u2605 ' : ''}{v.name}
+            </span>
+          );
+        })}
+        {phase === 'countdown' && (
+          <button onClick={cancelCountdown} className="font-display text-xs px-3 py-1.5 rounded-full bg-white border border-[#E7E2D4] text-[#8D8777] ml-auto">
+            Cancel
           </button>
-        ))}
-        <button
-          onClick={handleEndSession}
-          disabled={saving}
-          className="font-display text-xs px-3 py-1.5 rounded-full bg-white border border-[#E7E2D4] text-[#8D8777] ml-auto disabled:opacity-60"
-        >
-          {saving ? 'Saving…' : 'End session & save'}
-        </button>
+        )}
+        {phase === 'fighting' && (
+          <button onClick={() => setConfirmStop(true)} className="font-display text-xs px-3 py-1.5 rounded-full bg-white border border-[#E7E2D4] text-[#8D8777] ml-auto">
+            Retreat
+          </button>
+        )}
       </div>
-      {saveMsg && <p className="text-xs text-[#8D8777] mt-1">{saveMsg}</p>}
     </div>
   );
 }

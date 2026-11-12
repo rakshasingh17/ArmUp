@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Dumbbell, ArrowLeft, Loader2 } from 'lucide-react';
+import { apiFetch } from './api';
 
-const API_BASE = "http://localhost:8000";
 
 const INPUT_CLS =
   "w-full bg-white border border-[#E7E2D4] rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#C3CE9E]";
@@ -21,7 +21,7 @@ export default function LoginPage({ onLoggedIn, onBack, onSignup }) {
     setError(null);
 
     try {
-      const res = await fetch(`${API_BASE}/login`, {
+      const res = await apiFetch('/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: name.trim(), password }),
@@ -36,7 +36,7 @@ export default function LoginPage({ onLoggedIn, onBack, onSignup }) {
       const user = await res.json();
       onLoggedIn(user.id);
     } catch (err) {
-      setError("Couldn't reach the backend. Make sure uvicorn is running on port 8000, then try again.");
+      setError("Couldn't reach ArmUp's data. Please close and reopen the app, then try again.");
       console.error(err);
     } finally {
       setSubmitting(false);

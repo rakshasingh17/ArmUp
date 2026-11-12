@@ -6,8 +6,8 @@ import {
 import GameCanvas from './GameCanvas';
 import ExerciseCanvas from './ExerciseCanvas';
 import { usePoseSession } from './usePoseSession';
+import { apiFetch } from './api';
 
-const API_BASE = "http://localhost:8000";
 
 // Pastel palette per exercise -- soft card tints + a darker "ink" shade
 // of the same hue for text/dots, so each exercise reads as one color
@@ -68,9 +68,9 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit, allowPatient
     setLoading(true);
     try {
       const [uRes, rRes, sRes] = await Promise.all([
-        fetch(`${API_BASE}/users/${id}`).then(r => r.ok ? r.json() : null),
-        fetch(`${API_BASE}/users/${id}/exercises`).then(r => r.ok ? r.json() : []),
-        fetch(`${API_BASE}/users/${id}/sessions`).then(r => r.ok ? r.json() : [])
+        apiFetch(`/users/${id}`).then(r => r.ok ? r.json() : null),
+        apiFetch(`/users/${id}/exercises`).then(r => r.ok ? r.json() : []),
+        apiFetch(`/users/${id}/sessions`).then(r => r.ok ? r.json() : [])
       ]);
       // A saved login can outlive its account (e.g. armup.db was deleted).
       // Real logins go back to the start; the demo view keeps its old behavior.
@@ -285,9 +285,9 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit, allowPatient
             of the dashboard layout. */}
         <div id="exercise-stage" className="mb-8 scroll-mt-6">
           {mode === 'exercise' ? (
-            <ExerciseCanvas pose={pose} userId={userId} apiBase={API_BASE} onSessionSaved={() => fetchDashboardData(userId)} />
+            <ExerciseCanvas pose={pose} userId={userId} onSessionSaved={() => fetchDashboardData(userId)} />
           ) : (
-            <GameCanvas pose={pose} userId={userId} apiBase={API_BASE} onSessionSaved={() => fetchDashboardData(userId)} />
+            <GameCanvas pose={pose} userId={userId} onSessionSaved={() => fetchDashboardData(userId)} />
           )}
         </div>
 

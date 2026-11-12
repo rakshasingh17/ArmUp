@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Dumbbell, ArrowLeft, Loader2, ChevronDown, Check, X } from 'lucide-react';
+import { apiFetch } from './api';
 
-const API_BASE = "http://localhost:8000";
 const MIN_PASSWORD_LEN = 6; // keep in sync with MIN_PASSWORD_LEN in armup_api.py
 
 const INPUT_CLS =
@@ -19,7 +19,7 @@ export default function SignupPage({ onCreated, onBack, onLogin }) {
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    fetch(`${API_BASE}/conditions`)
+    apiFetch('/conditions')
       .then((r) => {
         if (!r.ok) throw new Error(`Backend responded ${r.status}`);
         return r.json();
@@ -60,7 +60,7 @@ export default function SignupPage({ onCreated, onBack, onLogin }) {
     setError(null);
 
     try {
-      const res = await fetch(`${API_BASE}/users`, {
+      const res = await apiFetch('/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: name.trim(), password, ailment_tags: selected }),
@@ -75,7 +75,7 @@ export default function SignupPage({ onCreated, onBack, onLogin }) {
       const user = await res.json();
       onCreated(user.id);
     } catch (err) {
-      setError("Couldn't reach the backend. Make sure uvicorn is running on port 8000, then try again.");
+      setError("Couldn't reach ArmUp's data. Please close and reopen the app, then try again.");
       console.error(err);
     } finally {
       setSubmitting(false);
@@ -272,7 +272,7 @@ function ConditionPicker({ options, selected, onToggle, loading, failed }) {
 
       {failed && (
         <p className="text-xs text-[#B15C7E] mt-2">
-          Couldn't load conditions. Make sure uvicorn is running on port 8000, then refresh.
+          Couldn't load conditions. Please close and reopen the app.
         </p>
       )}
 
