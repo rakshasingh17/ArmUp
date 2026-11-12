@@ -41,6 +41,10 @@ const CONDITION_LABELS = {
   desk_posture: 'Desk posture strain',
 };
 
+// Handed out for the demo. Change these before real use.
+const DEMO_INVITE_CODES = ['ARMUP-THERAPIST-1', 'ARMUP-THERAPIST-2', 'ARMUP-THERAPIST-3'];
+const ROLES = ['patient', 'therapist'];
+
 let db = null;
 
 // ---------------------------------------------------------------
@@ -70,7 +74,8 @@ function initSchema() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name VARCHAR NOT NULL,
       ailment_tags VARCHAR DEFAULT '',
-      password_hash VARCHAR
+      password_hash VARCHAR,
+      role VARCHAR NOT NULL DEFAULT 'patient'
     );
     CREATE TABLE IF NOT EXISTS exercises (
       key VARCHAR PRIMARY KEY,
@@ -94,11 +99,24 @@ function initSchema() {
       starting_tolerance FLOAT,
       priority INTEGER DEFAULT 1
     );
+    -- Single-use therapist invite codes. Only a hash of each code is stored.
+    CREATE TABLE IF NOT EXISTS invite_codes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      code_hash VARCHAR NOT NULL UNIQUE,
+      created_by INTEGER REFERENCES users(id),
+      created_at DATETIME,
+      used_by INTEGER REFERENCES users(id),
+      used_at DATETIME
+    );
   `);
   // Old databases from before login existed
   const cols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
   if (!cols.includes('password_hash')) {
     db.exec('ALTER TABLE users ADD COLUMN password_hash VARCHAR');
+  }
+  // Databases from before roles existed: everyone already in there is a patient.
+  if (!cols.includes('role')) {
+    db.exec("ALTER TABLE users ADD COLUMN role VARCHAR NOT NULL DEFAULT 'patient'");
   }
 }
 
@@ -117,6 +135,13 @@ function seedAll() {
   // new database needs one. Skipped when any user already exists.
   if (!db.prepare('SELECT 1 FROM users LIMIT 1').get()) {
     createUser('Demo Patient', ['neck_stiffness'], 'demo1234');
+  }
+  // First-run therapist invite codes so a fresh install can create its first
+  // therapist. These are demo values; a therapist can generate more from the
+  // dashboard once logged in.
+  if (!db.prepare('SELECT 1 FROM invite_codes LIMIT 1').get()) {
+    const ins = db.prepare('INSERT INTO invite_codes (code_hash, created_at) VALUES (?, ?)');
+    db.transaction(() => DEMO_INVITE_CODES.forEach((c) => ins.run(hashInvite(c), nowUtcForDb())))();
   }
 }
 
@@ -164,14 +189,55 @@ function utcIso(dbValue) {
 const tagsOf = (user) => (user.ailment_tags || '').split(',').filter(Boolean);
 
 function publicUser(user) {
-  return { id: user.id, name: user.name, ailment_tags: tagsOf(user) };
+  return { id: user.id, name: user.name, ailment_tags: tagsOf(user), role: user.role };
 }
 
-function createUser(name, ailmentTags = [], password = null) {
+function createUser(name, ailmentTags = [], password = null, role = 'patient') {
+  if (!ROLES.includes(role)) throw new Error(`Unknown role: ${role}`);
   const info = db
-    .prepare('INSERT INTO users (name, ailment_tags, password_hash) VALUES (?, ?, ?)')
-    .run(name, ailmentTags.join(','), password ? hashPassword(password) : null);
+    .prepare('INSERT INTO users (name, ailment_tags, password_hash, role) VALUES (?, ?, ?, ?)')
+    .run(name, ailmentTags.join(','), password ? hashPassword(password) : null, role);
   return getUser(Number(info.lastInsertRowid));
+}
+
+// ---------------------------------------------------------------
+// Invite codes (therapist signup)
+// ---------------------------------------------------------------
+// Codes are compared by hash and are case/space-insensitive.
+function hashInvite(code) {
+  return crypto
+    .createHash('sha256')
+    .update(String(code).trim().toUpperCase())
+    .digest('hex');
+}
+
+// Letters and digits without 0/O/1/I, so a code read aloud or typed from a
+// screenshot is hard to get wrong. ARMUP-XXXX-XXXX = 8 random characters.
+const INVITE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+function createInviteCode(createdByUserId) {
+  const pick = () => INVITE_ALPHABET[crypto.randomInt(INVITE_ALPHABET.length)];
+  const chunk = () => Array.from({ length: 4 }, pick).join('');
+  const code = `ARMUP-${chunk()}-${chunk()}`;
+  db.prepare('INSERT INTO invite_codes (code_hash, created_by, created_at) VALUES (?, ?, ?)')
+    .run(hashInvite(code), createdByUserId, nowUtcForDb());
+  return code; // shown once; only the hash is stored
+}
+
+// Creates a therapist and marks the code used, all-or-nothing. Returns the new
+// user, or null if the code doesn't exist or was already used.
+function createTherapistWithInvite(name, password, inviteCode) {
+  const run = db.transaction(() => {
+    const row = db
+      .prepare('SELECT id FROM invite_codes WHERE code_hash = ? AND used_by IS NULL')
+      .get(hashInvite(inviteCode));
+    if (!row) return null;
+    const user = createUser(name, [], password, 'therapist');
+    db.prepare('UPDATE invite_codes SET used_by = ?, used_at = ? WHERE id = ?')
+      .run(user.id, nowUtcForDb(), row.id);
+    return user;
+  });
+  return run();
 }
 
 function getUser(id) {
@@ -262,4 +328,5 @@ module.exports = {
   openDb, createUser, getUser, getUserByName, authenticate, listExercises,
   listConditions, getRecommendedExercises, logSession, getHistory,
   publicUser, publicSession, hashPassword, verifyPassword,
+  createInviteCode, createTherapistWithInvite, ROLES,
 };

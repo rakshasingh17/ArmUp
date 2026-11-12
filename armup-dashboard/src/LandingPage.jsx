@@ -25,7 +25,7 @@ const FEATURES = [
   },
 ];
 
-export default function LandingPage({ onGetStarted, onLogin, onDemo }) {
+export default function LandingPage({ onGetStarted, onLogin, onDemo, demoError }) {
   return (
     <div
       className="min-h-screen bg-[#F6F1E7] text-[#221E18] flex flex-col items-center"
@@ -75,6 +75,9 @@ export default function LandingPage({ onGetStarted, onLogin, onDemo }) {
             Continue as test patient
           </button>
         </div>
+        {demoError && (
+          <p className="text-xs text-[#B15C7E] bg-[#F3D9E2] rounded-xl px-3 py-2 mt-4 inline-block">{demoError}</p>
+        )}
       </main>
 
       <div className="w-full max-w-5xl px-6 pb-20 grid grid-cols-1 md:grid-cols-3 gap-5">

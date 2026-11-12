@@ -34,7 +34,7 @@ export default function LoginPage({ onLoggedIn, onBack, onSignup }) {
         return;
       }
       const user = await res.json();
-      onLoggedIn(user.id);
+      onLoggedIn(user);
     } catch (err) {
       setError("Couldn't reach ArmUp's data. Please close and reopen the app, then try again.");
       console.error(err);

@@ -7,6 +7,7 @@
 const { app, BrowserWindow, ipcMain, session } = require('electron');
 const path = require('node:path');
 const db = require('./db.cjs');
+const auth = require('./auth.cjs');
 const { handleRequest } = require('./routes.cjs');
 
 const isDev = !app.isPackaged;
@@ -42,9 +43,11 @@ app.whenReady().then(() => {
     legacyDbPath: isDev ? path.join(__dirname, '..', '..', 'backend', 'armup.db') : null,
   });
   console.log('[armup] database:', dbPath);
+  // Token-signing secret: created on first run, kept next to the database.
+  auth.initAuth(path.join(app.getPath('userData'), 'jwt-secret.key'));
 
-  ipcMain.handle('api:request', (_event, method, apiPath, body) =>
-    handleRequest(String(method).toUpperCase(), String(apiPath), body)
+  ipcMain.handle('api:request', (_event, method, apiPath, body, token) =>
+    handleRequest(String(method).toUpperCase(), String(apiPath), body, token)
   );
 
   // Camera only. Everything else the page asks for is refused.

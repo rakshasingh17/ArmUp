@@ -11,6 +11,8 @@ export default function SignupPage({ onCreated, onBack, onLogin }) {
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
+  const [role, setRole] = useState('patient'); // 'patient' | 'therapist'
+  const [inviteCode, setInviteCode] = useState('');
   const [conditions, setConditions] = useState([]); // [{ tag, label, exercises: [names] }]
   const [loadingConditions, setLoadingConditions] = useState(true);
   const [conditionsFailed, setConditionsFailed] = useState(false);
@@ -40,8 +42,10 @@ export default function SignupPage({ onCreated, onBack, onLogin }) {
     ...new Set(conditions.filter((c) => selected.includes(c.tag)).flatMap((c) => c.exercises)),
   ];
 
+  const isTherapist = role === 'therapist';
   const canSubmit =
-    name.trim() && password && confirm && selected.length > 0 && !submitting;
+    name.trim() && password && confirm && !submitting &&
+    (isTherapist ? inviteCode.trim() : selected.length > 0);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -63,7 +67,11 @@ export default function SignupPage({ onCreated, onBack, onLogin }) {
       const res = await apiFetch('/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name.trim(), password, ailment_tags: selected }),
+        body: JSON.stringify(
+          isTherapist
+            ? { name: name.trim(), password, role: 'therapist', invite_code: inviteCode.trim() }
+            : { name: name.trim(), password, role: 'patient', ailment_tags: selected }
+        ),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => null);
@@ -73,7 +81,7 @@ export default function SignupPage({ onCreated, onBack, onLogin }) {
         return;
       }
       const user = await res.json();
-      onCreated(user.id);
+      onCreated(user);
     } catch (err) {
       setError("Couldn't reach ArmUp's data. Please close and reopen the app, then try again.");
       console.error(err);
@@ -108,9 +116,28 @@ export default function SignupPage({ onCreated, onBack, onLogin }) {
         </div>
 
         <h1 className="font-display text-2xl font-semibold tracking-tight mb-1">Create your profile</h1>
-        <p className="text-sm text-[#8D8777] mb-8">
-          Tell us what you're recovering from and we'll set up your exercise plan.
+        <p className="text-sm text-[#8D8777] mb-6">
+          {isTherapist
+            ? 'Therapist accounts need an invite code from another ArmUp therapist.'
+            : "Tell us what you're recovering from and we'll set up your exercise plan."}
         </p>
+
+        <div role="radiogroup" aria-label="Account type" className="grid grid-cols-2 gap-1 bg-white border border-[#E7E2D4] rounded-2xl p-1 mb-6">
+          {[['patient', "I'm a patient"], ['therapist', "I'm a therapist"]].map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              role="radio"
+              aria-checked={role === value}
+              onClick={() => { setRole(value); setError(null); }}
+              className={`font-display text-sm font-medium py-2 rounded-xl transition-colors ${
+                role === value ? 'bg-[#17140F] text-[#E9E4D6]' : 'text-[#6B6450] hover:bg-[#F6F1E7]'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
 
         <form onSubmit={handleSubmit} className="space-y-5">
           <div>
@@ -127,6 +154,7 @@ export default function SignupPage({ onCreated, onBack, onLogin }) {
             />
           </div>
 
+          {!isTherapist && (
           <div>
             <label className="block text-xs font-medium text-[#6B6450] mb-1.5">
               Conditions <span className="font-normal text-[#B7B1A0]">(pick all that apply)</span>
@@ -176,6 +204,23 @@ export default function SignupPage({ onCreated, onBack, onLogin }) {
               </div>
             )}
           </div>
+          )}
+
+          {isTherapist && (
+            <div>
+              <label htmlFor="signup-invite" className="block text-xs font-medium text-[#6B6450] mb-1.5">Invite code</label>
+              <input
+                id="signup-invite"
+                type="text"
+                value={inviteCode}
+                onChange={(e) => setInviteCode(e.target.value)}
+                placeholder="ARMUP-XXXX-XXXX"
+                autoComplete="off"
+                spellCheck={false}
+                className={`${INPUT_CLS} font-mono tracking-wide`}
+              />
+            </div>
+          )}
 
           <div>
             <label htmlFor="signup-password" className="block text-xs font-medium text-[#6B6450] mb-1.5">
@@ -215,7 +260,7 @@ export default function SignupPage({ onCreated, onBack, onLogin }) {
             className="font-display w-full flex items-center justify-center gap-2 bg-[#17140F] text-[#E9E4D6] px-6 py-3 rounded-2xl font-medium hover:bg-[#221E18] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {submitting && <Loader2 size={16} className="animate-spin" />}
-            {submitting ? 'Creating profile…' : 'Create profile & continue'}
+            {submitting ? 'Creating profile…' : isTherapist ? 'Create therapist account' : 'Create profile & continue'}
           </button>
         </form>
 

@@ -7,6 +7,7 @@ import GameCanvas from './GameCanvas';
 import ExerciseCanvas from './ExerciseCanvas';
 import { usePoseSession } from './usePoseSession';
 import { apiFetch } from './api';
+import InviteCodeButton from './InviteCodeButton';
 
 
 // Pastel palette per exercise -- soft card tints + a darker "ink" shade
@@ -46,9 +47,11 @@ const NAV_ITEMS = [
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
 
-// allowPatientSwitch: true only for the "test patient" demo, where the
-// Patient ID box is editable. Real logins just see their own ID.
-export default function ArmUpDashboard({ initialUserId = 1, onExit, allowPatientSwitch = false } = {}) {
+// role comes from the login. Therapists can look up any patient by ID and can
+// create invite codes; patients see only their own record (the main process
+// enforces this -- the UI just matches it).
+export default function ArmUpDashboard({ initialUserId = 1, onExit, role = 'patient' } = {}) {
+  const allowPatientSwitch = role === 'therapist';
   const [userId, setUserId] = useState(initialUserId);
   const [user, setUser] = useState(null);
   const [recommended, setRecommended] = useState([]);
@@ -206,20 +209,23 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit, allowPatient
           </nav>
         </div>
 
-        {onExit ? (
-          <button
-            onClick={onExit}
-            className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-[#B7B1A0] hover:bg-white/5 hover:text-[#E9E4D6] transition-colors text-left"
-          >
-            <LogOut size={16} />
-            Log out
-          </button>
-        ) : (
-          <div className="flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-[#B7B1A0]">
-            <LogOut size={16} />
-            Log out
-          </div>
-        )}
+        <div>
+          {role === 'therapist' && <InviteCodeButton />}
+          {onExit ? (
+            <button
+              onClick={onExit}
+              className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-[#B7B1A0] hover:bg-white/5 hover:text-[#E9E4D6] transition-colors text-left"
+            >
+              <LogOut size={16} />
+              Log out
+            </button>
+          ) : (
+            <div className="flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-[#B7B1A0]">
+              <LogOut size={16} />
+              Log out
+            </div>
+          )}
+        </div>
       </aside>
 
       {/* Main content */}

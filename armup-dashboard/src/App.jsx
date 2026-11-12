@@ -1,14 +1,16 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import LandingPage from './LandingPage';
 import SignupPage from './SignupPage';
 import LoginPage from './LoginPage';
 import ArmUpDashboard from './armUpDashboard';
+import { apiFetch, setAuthToken, setUnauthorizedHandler } from './api';
 
-// Raksha's existing test patient. If her seeded user id in armup_db.py
-// isn't 1, update this constant to match.
+// Where the app starts before anyone has logged in (never shown as a real user).
 const TEST_PATIENT_ID = 1;
 
-// Only the user id (and whether it's the demo) is saved -- never the password.
+// What is remembered between launches: who is logged in, their role and their
+// login token. Never the password. The token expires on its own (8 hours);
+// when the main process rejects it the app logs the user out.
 const SESSION_KEY = 'armup.session';
 
 function loadSession() {
@@ -16,7 +18,13 @@ function loadSession() {
     const raw = localStorage.getItem(SESSION_KEY);
     if (!raw) return null;
     const s = JSON.parse(raw);
-    return Number.isInteger(s?.userId) ? { userId: s.userId, isDemo: !!s.isDemo } : null;
+    const valid =
+      Number.isInteger(s?.userId) &&
+      typeof s?.token === 'string' &&
+      (s?.role === 'patient' || s?.role === 'therapist');
+    return valid
+      ? { userId: s.userId, role: s.role, token: s.token, isDemo: !!s.isDemo }
+      : null;
   } catch {
     return null;
   }
@@ -34,25 +42,49 @@ function saveSession(session) {
 
 export default function App() {
   // If someone was logged in before the reload, go straight back to their dashboard.
-  const [saved] = useState(loadSession);
+  const [saved] = useState(() => {
+    const s = loadSession();
+    setAuthToken(s ? s.token : null);
+    return s;
+  });
 
   const [screen, setScreen] = useState(saved ? 'dashboard' : 'landing'); // 'landing' | 'signup' | 'login' | 'dashboard'
   const [activeUserId, setActiveUserId] = useState(saved ? saved.userId : TEST_PATIENT_ID);
-  // Demo mode = "Continue as test patient": the dashboard lets you flip
-  // between patient IDs. Logged-in / freshly signed-up users only see their own.
-  const [isDemo, setIsDemo] = useState(saved ? saved.isDemo : false);
+  const [role, setRole] = useState(saved ? saved.role : 'patient');
+  const [demoError, setDemoError] = useState(null);
 
-  const openDashboard = (userId, demo = false) => {
-    saveSession({ userId, isDemo: demo });
-    setActiveUserId(userId);
-    setIsDemo(demo);
+  // `user` is the answer from /login, /users or /demo-login: { id, role, token, ... }.
+  const openDashboard = (user, demo = false) => {  // demo: "Continue as test patient" (a normal patient login)
+    setAuthToken(user.token);
+    saveSession({ userId: user.id, role: user.role, token: user.token, isDemo: demo });
+    setActiveUserId(user.id);
+    setRole(user.role);
     setScreen('dashboard');
   };
 
   const logOut = () => {
+    setAuthToken(null);
     saveSession(null);
-    setIsDemo(false);
+    setRole('patient');
     setScreen('landing');
+  };
+
+  // If the main process says our token is no longer good, go back to the start.
+  useEffect(() => {
+    setUnauthorizedHandler(logOut);
+    return () => setUnauthorizedHandler(null);
+  });
+
+  const startDemo = async () => {
+    setDemoError(null);
+    try {
+      const res = await apiFetch('/demo-login', { method: 'POST', body: '{}' });
+      if (!res.ok) throw new Error(`Demo login failed (${res.status})`);
+      openDashboard(await res.json(), true);
+    } catch (err) {
+      console.error(err);
+      setDemoError("Couldn't open the demo account. Please close and reopen the app.");
+    }
   };
 
   if (screen === 'signup') {
@@ -60,7 +92,7 @@ export default function App() {
       <SignupPage
         onBack={() => setScreen('landing')}
         onLogin={() => setScreen('login')}
-        onCreated={(newUserId) => openDashboard(newUserId)}
+        onCreated={(user) => openDashboard(user)}
       />
     );
   }
@@ -70,7 +102,7 @@ export default function App() {
       <LoginPage
         onBack={() => setScreen('landing')}
         onSignup={() => setScreen('signup')}
-        onLoggedIn={(userId) => openDashboard(userId)}
+        onLoggedIn={(user) => openDashboard(user)}
       />
     );
   }
@@ -79,7 +111,7 @@ export default function App() {
     return (
       <ArmUpDashboard
         initialUserId={activeUserId}
-        allowPatientSwitch={isDemo}
+        role={role}
         onExit={logOut}
       />
     );
@@ -89,7 +121,8 @@ export default function App() {
     <LandingPage
       onGetStarted={() => setScreen('signup')}
       onLogin={() => setScreen('login')}
-      onDemo={() => openDashboard(TEST_PATIENT_ID, true)}
+      onDemo={startDemo}
+      demoError={demoError}
     />
   );
 }
