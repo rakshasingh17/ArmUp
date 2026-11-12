@@ -155,3 +155,25 @@ test('a database from before roles gets the role column, everyone a patient', ()
   assert.equal(db.getUserByName('legacy').role, 'patient');
   assert.ok(db.authenticate('legacy', 'oldpass1'));
 });
+
+test('patient list: therapists only, with a progress summary', () => {
+  const a = pat('listed');
+  const s = { exercise_key: 'curl', reps: 10, score: 100, accuracy: 80, max_streak: 4, level: 1 };
+  call('POST', '/sessions', { ...s, user_id: a.id }, a.token);
+  call('POST', '/sessions', { ...s, accuracy: 90, reps: 5, user_id: a.id }, a.token);
+
+  assert.equal(call('GET', '/patients').status, 401);
+  assert.equal(call('GET', '/patients', undefined, a.token).status, 403);
+
+  const th = call('POST', '/users', { name: 'dr-list', password: 'secret12', role: 'therapist', invite_code: 'ARMUP-THERAPIST-3' });
+  assert.equal(th.status, 200);
+  const list = call('GET', '/patients', undefined, th.body.token);
+  assert.equal(list.status, 200);
+  const row = list.body.find((p) => p.id === a.id);
+  assert.equal(row.session_count, 2);
+  assert.equal(row.total_reps, 15);
+  assert.equal(row.avg_accuracy, 85);
+  assert.ok(row.last_session);
+  assert.ok(!list.body.some((p) => p.id === th.body.id), 'therapists are not listed as patients');
+  assert.ok(list.body.every((p) => !('password_hash' in p) && !('token' in p)));
+});

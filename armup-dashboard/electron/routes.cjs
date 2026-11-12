@@ -83,6 +83,12 @@ route('POST', /^\/invites$/, (_p, _body, who) => {
   return ok({ code: db.createInviteCode(who.sub) });
 });
 
+// The therapist's patient list. Patients get 403.
+route('GET', /^\/patients$/, (_p, _body, who) => {
+  if (!isTherapist(who)) return fail(403, 'Only therapists can see the patient list.');
+  return ok(db.listPatientSummaries());
+});
+
 route('GET', /^\/users\/(\d+)$/, ([id], _body, who) => {
   if (!canReadUser(who, Number(id))) return fail(403, 'Not allowed.');
   const user = db.getUser(Number(id));

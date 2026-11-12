@@ -254,6 +254,32 @@ function authenticate(name, password) {
   return user && verifyPassword(password, user.password_hash) ? user : null;
 }
 
+// One row per patient with a quick progress summary, for the therapist's list.
+function listPatientSummaries() {
+  return db
+    .prepare(
+      `SELECT u.id, u.name, u.ailment_tags,
+              COUNT(s.id) AS session_count,
+              COALESCE(SUM(s.reps), 0) AS total_reps,
+              AVG(s.accuracy) AS avg_accuracy,
+              MAX(s.timestamp) AS last_session
+       FROM users u LEFT JOIN session_logs s ON s.user_id = u.id
+       WHERE u.role = 'patient'
+       GROUP BY u.id
+       ORDER BY u.name COLLATE NOCASE`
+    )
+    .all()
+    .map((r) => ({
+      id: r.id,
+      name: r.name,
+      ailment_tags: tagsOf(r),
+      session_count: r.session_count,
+      total_reps: r.total_reps,
+      avg_accuracy: r.avg_accuracy === null ? null : Math.round(r.avg_accuracy),
+      last_session: utcIso(r.last_session),
+    }));
+}
+
 function listExercises() {
   return db.prepare('SELECT key, name FROM exercises').all();
 }
@@ -328,5 +354,5 @@ module.exports = {
   openDb, createUser, getUser, getUserByName, authenticate, listExercises,
   listConditions, getRecommendedExercises, logSession, getHistory,
   publicUser, publicSession, hashPassword, verifyPassword,
-  createInviteCode, createTherapistWithInvite, ROLES,
+  createInviteCode, createTherapistWithInvite, ROLES, listPatientSummaries,
 };

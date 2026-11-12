@@ -7,7 +7,6 @@ import GameCanvas from './GameCanvas';
 import ExerciseCanvas from './ExerciseCanvas';
 import { usePoseSession } from './usePoseSession';
 import { apiFetch } from './api';
-import InviteCodeButton from './InviteCodeButton';
 
 
 // Pastel palette per exercise -- soft card tints + a darker "ink" shade
@@ -47,12 +46,10 @@ const NAV_ITEMS = [
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
 
-// role comes from the login. Therapists can look up any patient by ID and can
-// create invite codes; patients see only their own record (the main process
-// enforces this -- the UI just matches it).
-export default function ArmUpDashboard({ initialUserId = 1, onExit, role = 'patient' } = {}) {
-  const allowPatientSwitch = role === 'therapist';
-  const [userId, setUserId] = useState(initialUserId);
+// The patient's own dashboard. Therapists use TherapistDashboard instead,
+// and the main process only lets a patient read their own record.
+export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
+  const userId = initialUserId;
   const [user, setUser] = useState(null);
   const [recommended, setRecommended] = useState([]);
   const [sessions, setSessions] = useState([]);
@@ -77,7 +74,7 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit, role = 'pati
       ]);
       // A saved login can outlive its account (e.g. armup.db was deleted).
       // Real logins go back to the start; the demo view keeps its old behavior.
-      if (!uRes && !allowPatientSwitch && onExit) {
+      if (!uRes && onExit) {
         onExit();
         return;
       }
@@ -209,23 +206,20 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit, role = 'pati
           </nav>
         </div>
 
-        <div>
-          {role === 'therapist' && <InviteCodeButton />}
-          {onExit ? (
-            <button
-              onClick={onExit}
-              className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-[#B7B1A0] hover:bg-white/5 hover:text-[#E9E4D6] transition-colors text-left"
-            >
-              <LogOut size={16} />
-              Log out
-            </button>
-          ) : (
-            <div className="flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-[#B7B1A0]">
-              <LogOut size={16} />
-              Log out
-            </div>
-          )}
-        </div>
+        {onExit ? (
+          <button
+            onClick={onExit}
+            className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-[#B7B1A0] hover:bg-white/5 hover:text-[#E9E4D6] transition-colors text-left"
+          >
+            <LogOut size={16} />
+            Log out
+          </button>
+        ) : (
+          <div className="flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-[#B7B1A0]">
+            <LogOut size={16} />
+            Log out
+          </div>
+        )}
       </aside>
 
       {/* Main content */}
@@ -247,16 +241,7 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit, role = 'pati
           <div className="flex items-center gap-3 bg-white border border-[#E7E2D4] p-2 rounded-2xl shadow-sm">
             <User className="text-[#8D8777] ml-2" size={18} />
             <span className="text-xs font-medium text-[#8D8777]">Patient ID</span>
-            {allowPatientSwitch ? (
-              <input
-                type="number"
-                value={userId}
-                onChange={(e) => setUserId(Number(e.target.value) || 1)}
-                className="w-14 bg-[#F6F1E7] border border-[#E7E2D4] rounded-lg px-2 py-1 text-sm text-[#221E18] text-center font-mono focus:outline-none focus:ring-2 focus:ring-[#C3CE9E]"
-              />
-            ) : (
-              <span className="w-14 text-center text-sm text-[#221E18] font-mono">{userId}</span>
-            )}
+            <span className="w-14 text-center text-sm text-[#221E18] font-mono">{userId}</span>
             <div className="text-sm font-semibold pr-2 border-l border-[#E7E2D4] pl-3">
               {user ? user.name : "Unknown"}
             </div>

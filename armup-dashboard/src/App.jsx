@@ -3,6 +3,7 @@ import LandingPage from './LandingPage';
 import SignupPage from './SignupPage';
 import LoginPage from './LoginPage';
 import ArmUpDashboard from './armUpDashboard';
+import TherapistDashboard from './TherapistDashboard';
 import { apiFetch, setAuthToken, setUnauthorizedHandler } from './api';
 
 // Where the app starts before anyone has logged in (never shown as a real user).
@@ -108,10 +109,13 @@ export default function App() {
   }
 
   if (screen === 'dashboard') {
+    // Therapists get their own screen; patients get the exercise dashboard.
+    if (role === 'therapist') {
+      return <TherapistDashboard userId={activeUserId} onExit={logOut} />;
+    }
     return (
       <ArmUpDashboard
         initialUserId={activeUserId}
-        role={role}
         onExit={logOut}
       />
     );
