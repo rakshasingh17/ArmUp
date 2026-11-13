@@ -17,14 +17,17 @@ import { apiFetch } from './api';
 const CANVAS_W = 960;
 const CANVAS_H = 540;
 
+// BASE is './' in the built app, so images resolve inside the Electron window
+// (an absolute '/game/...' would point at the drive root under file://).
+const BASE = import.meta.env.BASE_URL;
 const ASSETS = {
-  sky: '/game/cave-sky.png',
-  main: '/game/cave-bg.png',
-  fg: '/game/cave-fg.png',
-  idle: '/game/wizard/idle.png',
-  takeHit: '/game/wizard/take-hit.png',
-  death: '/game/wizard/death.png',
-  attack: '/game/wizard/attack.png',
+  sky: `${BASE}game/cave-sky.png`,
+  main: `${BASE}game/cave-bg.png`,
+  fg: `${BASE}game/cave-fg.png`,
+  idle: `${BASE}game/wizard/idle.png`,
+  takeHit: `${BASE}game/wizard/take-hit.png`,
+  death: `${BASE}game/wizard/death.png`,
+  attack: `${BASE}game/wizard/attack.png`,
 };
 
 // One villain = one guided session (same discipline as Exercise mode).
