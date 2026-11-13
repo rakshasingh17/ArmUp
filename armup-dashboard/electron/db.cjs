@@ -263,6 +263,11 @@ function createTherapistWithInvite(name, password, inviteCode) {
   return run();
 }
 
+// Used by reset-password.cjs (a developer tool, not reachable from the app).
+function setPassword(userId, newPassword) {
+  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(newPassword), userId);
+}
+
 function getUser(id) {
   return db.prepare('SELECT * FROM users WHERE id = ?').get(id);
 }
@@ -465,6 +470,6 @@ module.exports = {
   listConditions, getRecommendedExercises, logSession, getHistory,
   publicUser, publicSession, hashPassword, verifyPassword,
   createInviteCode, createTherapistWithInvite, ROLES, listPatientSummaries,
-  getPlanRows, setPlan, clearPlan, publicNote, addNote, listNotes, deleteNote,
+  setPassword, getPlanRows, setPlan, clearPlan, publicNote, addNote, listNotes, deleteNote,
   PLAN_MIN_REPS, PLAN_MAX_REPS, NOTE_MAX_LEN,
 };
