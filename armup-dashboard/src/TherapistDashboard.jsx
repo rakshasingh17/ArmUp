@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
-import { Dumbbell, Users, LogOut, ArrowLeft, Loader2, Activity, Target, Flame, ClipboardList, ShieldAlert } from 'lucide-react';
+import { Dumbbell, Users, LogOut, ArrowLeft, Loader2, Activity, Target, Flame, ClipboardList, ShieldAlert, Play } from 'lucide-react';
 import { apiFetch } from './api';
 import InviteCodeButton from './InviteCodeButton';
 import NotesCard from './NotesCard';
 import PlanEditor from './PlanEditor';
+import RecordingPlayer from './RecordingPlayer';
 
 // Therapist home. Separate from the patient dashboard: no camera, no
 // exercises. A list of patients, and a read-only progress page for each.
@@ -203,6 +204,7 @@ function PatientDetail({ selected, summary, therapistId, onBack }) {
     : 0;
   const bestStreak = sessions.length ? Math.max(...sessions.map((s) => s.max_streak)) : 0;
   const recent = [...sessions].reverse().slice(0, 15); // newest first
+  const [watching, setWatching] = useState(null); // session whose recording is open
 
   // Form: only sessions that recorded it (older ones have form_faults = null).
   const formSessions = sessions.filter((s) => s.form_faults && FORM_TRACKED.has(s.exercise_key));
@@ -286,7 +288,8 @@ function PatientDetail({ selected, summary, therapistId, onBack }) {
                     <th className="px-3 py-2 font-medium">Reps</th>
                     <th className="px-3 py-2 font-medium">Accuracy</th>
                     <th className="px-3 py-2 font-medium">Form</th>
-                    <th className="px-6 py-2 font-medium">Score</th>
+                    <th className="px-3 py-2 font-medium">Score</th>
+                    <th className="px-6 py-2 font-medium">Video</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -297,13 +300,34 @@ function PatientDetail({ selected, summary, therapistId, onBack }) {
                       <td className="px-3 py-3">{s.reps}</td>
                       <td className="px-3 py-3">{Math.round(s.accuracy)}%</td>
                       <td className="px-3 py-3"><FormCell session={s} /></td>
-                      <td className="px-6 py-3">{s.score}</td>
+                      <td className="px-3 py-3">{s.score}</td>
+                      <td className="px-6 py-3">
+                        {s.has_recording ? (
+                          <button
+                            onClick={() => setWatching(s)}
+                            className="flex items-center gap-1.5 bg-[#17140F] text-[#E9E4D6] text-xs font-medium px-3 py-1.5 rounded-lg"
+                          >
+                            <Play size={12} />
+                            Watch
+                          </button>
+                        ) : (
+                          <span className="text-[#B7B1A0]">—</span>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             )}
           </div>
+
+          {watching && (
+            <RecordingPlayer
+              sessionId={watching.id}
+              title={`${selected.name} · ${exerciseName(watching.exercise_key)} · ${formatWhen(watching.timestamp)}`}
+              onClose={() => setWatching(null)}
+            />
+          )}
 
           {/* key = patient id, so switching patients always starts from fresh data */}
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 mt-6 items-start">

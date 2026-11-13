@@ -8,12 +8,14 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const db = require('./db.cjs');
+const recordings = require('./recordings.cjs');
 const auth = require('./auth.cjs');
 const { handleRequest } = require('./routes.cjs');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'armup-auth-'));
 db.openDb(path.join(tmp, 'armup.db'));
 auth.initAuth(path.join(tmp, 'jwt-secret.key'));
+recordings.initRecordings(path.join(tmp, 'recordings'));
 
 const call = (method, p, body, token) => handleRequest(method, p, body, token);
 const login = (name, password) => call('POST', '/login', { name, password }).body;
@@ -262,6 +264,104 @@ test('form faults: saved with a session, cleaned, visible to the therapist', () 
   assert.deepEqual(seen[0].form_faults, { elbow_drift: 3 });
   assert.deepEqual(seen[1].form_faults, {});
   assert.equal(seen[4].form_faults, null);
+});
+
+// A tiny but valid-looking WebM: starts with the EBML header bytes 1A 45 DF A3.
+const fakeWebm = Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.from('pretend this is video')]);
+const sessBody = (uid) => ({ user_id: uid, exercise_key: 'curl', reps: 10, score: 90, accuracy: 80, max_streak: 3, level: 1 });
+
+test('recordings: consent is the patient\'s, off by default, and gates uploads', () => {
+  const a = pat('rec-a');
+  const b = pat('rec-b');
+  const dr = therapistToken('dr1');
+  assert.equal(a.share_recordings, false);
+  assert.equal(login('rec-a', 'secret12').share_recordings, false);
+
+  const s = call('POST', '/sessions', sessBody(a.id), a.token).body;
+  assert.equal(s.has_recording, false);
+  const up = (token, id, data) => call('POST', `/sessions/${id}/recording`, { data }, token);
+
+  assert.equal(up(a.token, s.id, fakeWebm.toString('base64')).status, 403, 'no consent -> no upload');
+  // nobody else can switch it on for them
+  assert.equal(call('PUT', `/users/${a.id}/recording-consent`, { share_recordings: true }, b.token).status, 403);
+  assert.equal(call('PUT', `/users/${a.id}/recording-consent`, { share_recordings: true }, dr).status, 403, 'not even a therapist');
+  assert.equal(call('PUT', `/users/${a.id}/recording-consent`, { share_recordings: 'yes' }, a.token).status, 400);
+  assert.equal(call('PUT', `/users/${a.id}/recording-consent`, { share_recordings: true }).status, 401);
+  assert.equal(call('PUT', `/users/${a.id}/recording-consent`, { share_recordings: true }, a.token).status, 200);
+  assert.equal(call('GET', `/users/${a.id}`, undefined, a.token).body.share_recordings, true);
+});
+
+test('recordings: upload rules (own session, valid webm, size, once)', () => {
+  const a = pat('up-a');
+  const b = pat('up-b');
+  call('PUT', `/users/${a.id}/recording-consent`, { share_recordings: true }, a.token);
+  call('PUT', `/users/${b.id}/recording-consent`, { share_recordings: true }, b.token);
+  const s = call('POST', '/sessions', sessBody(a.id), a.token).body;
+  const up = (token, id, data) => call('POST', `/sessions/${id}/recording`, { data }, token);
+  const ok64 = fakeWebm.toString('base64');
+
+  assert.equal(up(undefined, s.id, ok64).status, 401);
+  assert.equal(up(b.token, s.id, ok64).status, 404, "someone else's session");
+  assert.equal(up(a.token, 99999, ok64).status, 404);
+  for (const bad of [undefined, '', 'not base64 !!', Buffer.from('plain text, not a video').toString('base64'), Buffer.from([0x1a, 0x45]).toString('base64')]) {
+    assert.equal(up(a.token, s.id, bad).status, 400, String(bad).slice(0, 20));
+  }
+  const huge = Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.alloc(recordings.MAX_BYTES)]).toString('base64');
+  assert.equal(up(a.token, s.id, huge).status, 400, 'too large');
+  assert.equal(call('GET', `/users/${a.id}/sessions`, undefined, a.token).body[0].has_recording, false, 'rejects leave nothing behind');
+
+  assert.equal(up(a.token, s.id, ok64).status, 200);
+  assert.equal(up(a.token, s.id, ok64).status, 409, 'only once');
+  assert.equal(call('GET', `/users/${a.id}/sessions`, undefined, a.token).body[0].has_recording, true);
+});
+
+test('recordings: who can watch, and consent withdrawal', () => {
+  const a = pat('w-a');
+  const b = pat('w-b');
+  const dr = therapistToken('dr1');
+  call('PUT', `/users/${a.id}/recording-consent`, { share_recordings: true }, a.token);
+  const s = call('POST', '/sessions', sessBody(a.id), a.token).body;
+  call('POST', `/sessions/${s.id}/recording`, { data: fakeWebm.toString('base64') }, a.token);
+  const watch = (token) => call('GET', `/sessions/${s.id}/recording`, undefined, token);
+
+  assert.equal(watch(undefined).status, 401);
+  const mine = watch(a.token);
+  assert.equal(mine.status, 200);
+  assert.equal(mine.body.mime, 'video/webm');
+  assert.deepEqual(Buffer.from(mine.body.data, 'base64'), fakeWebm, 'bytes round trip');
+  assert.equal(watch(b.token).status, 404, 'another patient');
+  assert.equal(watch(dr).status, 200, 'therapist, consent on');
+
+  call('PUT', `/users/${a.id}/recording-consent`, { share_recordings: false }, a.token);
+  assert.equal(watch(dr).status, 403, 'consent withdrawn -> therapist locked out');
+  assert.equal(watch(a.token).status, 200, 'patient still sees their own');
+  call('PUT', `/users/${a.id}/recording-consent`, { share_recordings: true }, a.token);
+  assert.equal(watch(dr).status, 200, 'and back on');
+
+  const none = call('POST', '/sessions', sessBody(a.id), a.token).body;
+  assert.equal(call('GET', `/sessions/${none.id}/recording`, undefined, dr).status, 404, 'session without a recording');
+});
+
+test('recordings: old ones are cleaned up, new ones kept', () => {
+  const a = pat('old-a');
+  call('PUT', `/users/${a.id}/recording-consent`, { share_recordings: true }, a.token);
+  const mk = () => {
+    const s = call('POST', '/sessions', sessBody(a.id), a.token).body;
+    call('POST', `/sessions/${s.id}/recording`, { data: fakeWebm.toString('base64') }, a.token);
+    return s.id;
+  };
+  const oldId = mk();
+  const newId = mk();
+  const Database = require('better-sqlite3');
+  const raw = new Database(path.join(tmp, 'armup.db'));
+  raw.prepare("UPDATE session_logs SET timestamp = '2020-01-01 00:00:00.000000' WHERE id = ?").run(oldId);
+  raw.close?.();
+  const expired = db.listExpiredRecordingIds(recordings.RETENTION_DAYS);
+  assert.ok(expired.includes(oldId) && !expired.includes(newId));
+  for (const id of expired) { recordings.removeRecording(id); db.setHasRecording(id, false); }
+  assert.equal(recordings.readRecording(oldId), null);
+  assert.ok(recordings.readRecording(newId));
+  assert.equal(call('GET', `/sessions/${oldId}/recording`, undefined, a.token).status, 404);
 });
 
 test('a database from before roles gets the role column, everyone a patient', () => {

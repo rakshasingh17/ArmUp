@@ -10,6 +10,7 @@
  */
 const db = require('./db.cjs');
 const auth = require('./auth.cjs');
+const recordings = require('./recordings.cjs');
 
 const MIN_PASSWORD_LEN = 6; // keep in sync with SignupPage.jsx
 
@@ -115,6 +116,50 @@ route('GET', /^\/users\/(\d+)\/exercises$/, ([id], _body, who) => {
       custom: r.custom,
     }))
   );
+});
+
+// ---------------------------------------------------------------
+// Set recordings (video of a patient's set, if they agreed to it)
+// ---------------------------------------------------------------
+// The patient's own choice. Only they can change it, and turning it off
+// immediately stops their therapist from watching anything.
+route('PUT', /^\/users\/(\d+)\/recording-consent$/, ([id], body, who) => {
+  if (who.sub !== Number(id)) return fail(403, 'Not allowed.');
+  if (typeof body?.share_recordings !== 'boolean') return fail(400, 'Please say yes or no.');
+  db.setShareRecordings(who.sub, body.share_recordings);
+  return ok({ share_recordings: body.share_recordings });
+});
+
+// The patient's page uploads the video right after saving the session.
+route('POST', /^\/sessions\/(\d+)\/recording$/, ([id], body, who) => {
+  const session = db.getSession(Number(id));
+  if (!session || session.user_id !== who.sub) return fail(404, 'Session not found.');
+  const owner = db.getUser(who.sub);
+  if (!owner.share_recordings) return fail(403, 'Recordings are switched off for this account.');
+  if (session.has_recording) return fail(409, 'This session already has a recording.');
+  const decoded = recordings.decodeUpload(body?.data);
+  if (decoded.error) return fail(400, decoded.error);
+  recordings.saveRecording(session.id, decoded.buf);
+  db.setHasRecording(session.id, true);
+  return ok({ saved: true });
+});
+
+// The patient can watch their own; a therapist can watch a patient's only
+// while that patient still allows it.
+route('GET', /^\/sessions\/(\d+)\/recording$/, ([id], _body, who) => {
+  const session = db.getSession(Number(id));
+  if (!session || !session.has_recording) return fail(404, 'No recording for this session.');
+  const mine = session.user_id === who.sub;
+  if (!mine) {
+    // Another patient gets the same answer as "no such recording".
+    if (!isTherapist(who)) return fail(404, 'No recording for this session.');
+    if (!db.getUser(session.user_id)?.share_recordings) {
+      return fail(403, 'This patient has not allowed recordings to be watched.');
+    }
+  }
+  const buf = recordings.readRecording(session.id);
+  if (!buf) return fail(404, 'No recording for this session.');
+  return ok({ mime: 'video/webm', data: buf.toString('base64') });
 });
 
 // ---------------------------------------------------------------

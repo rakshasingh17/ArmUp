@@ -80,7 +80,9 @@ function initSchema() {
       name VARCHAR NOT NULL,
       ailment_tags VARCHAR DEFAULT '',
       password_hash VARCHAR,
-      role VARCHAR NOT NULL DEFAULT 'patient'
+      role VARCHAR NOT NULL DEFAULT 'patient',
+      -- 1 = the patient agreed that their therapist may watch recordings of their sets
+      share_recordings INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS exercises (
       key VARCHAR PRIMARY KEY,
@@ -96,7 +98,8 @@ function initSchema() {
       accuracy FLOAT DEFAULT 0.0,
       max_streak INTEGER DEFAULT 0,
       level INTEGER DEFAULT 1,
-      form_faults TEXT
+      form_faults TEXT,
+      has_recording INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS ailment_exercise_map (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -145,6 +148,12 @@ function initSchema() {
   const sessionCols = db.prepare('PRAGMA table_info(session_logs)').all().map((c) => c.name);
   if (!sessionCols.includes('form_faults')) {
     db.exec('ALTER TABLE session_logs ADD COLUMN form_faults TEXT');
+  }
+  if (!sessionCols.includes('has_recording')) {
+    db.exec('ALTER TABLE session_logs ADD COLUMN has_recording INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!cols.includes('share_recordings')) {
+    db.exec('ALTER TABLE users ADD COLUMN share_recordings INTEGER NOT NULL DEFAULT 0');
   }
   if (!cols.includes('role')) {
     db.exec("ALTER TABLE users ADD COLUMN role VARCHAR NOT NULL DEFAULT 'patient'");
@@ -220,7 +229,34 @@ function utcIso(dbValue) {
 const tagsOf = (user) => (user.ailment_tags || '').split(',').filter(Boolean);
 
 function publicUser(user) {
-  return { id: user.id, name: user.name, ailment_tags: tagsOf(user), role: user.role };
+  return {
+    id: user.id, name: user.name, ailment_tags: tagsOf(user), role: user.role,
+    share_recordings: !!user.share_recordings,
+  };
+}
+
+function setShareRecordings(userId, allowed) {
+  db.prepare('UPDATE users SET share_recordings = ? WHERE id = ?').run(allowed ? 1 : 0, userId);
+}
+
+// ---------------------------------------------------------------
+// Recordings (the video files themselves live in recordings.cjs)
+// ---------------------------------------------------------------
+function getSession(id) {
+  return db.prepare('SELECT * FROM session_logs WHERE id = ?').get(id);
+}
+
+function setHasRecording(sessionId, has) {
+  db.prepare('UPDATE session_logs SET has_recording = ? WHERE id = ?').run(has ? 1 : 0, sessionId);
+}
+
+// Sessions whose recording is older than `days`, for the startup clean-up.
+function listExpiredRecordingIds(days) {
+  const cutoff = new Date(Date.now() - days * 86400000).toISOString().replace('T', ' ').replace('Z', '') + '000';
+  return db
+    .prepare('SELECT id FROM session_logs WHERE has_recording = 1 AND timestamp < ?')
+    .all(cutoff)
+    .map((r) => r.id);
 }
 
 function createUser(name, ailmentTags = [], password = null, role = 'patient') {
@@ -486,6 +522,7 @@ function publicSession(s) {
     max_streak: s.max_streak,
     level: s.level,
     form_faults: parseFormFaults(s.form_faults),
+    has_recording: !!s.has_recording,
   };
 }
 
@@ -504,6 +541,6 @@ module.exports = {
   listConditions, getRecommendedExercises, logSession, getHistory,
   publicUser, publicSession, hashPassword, verifyPassword,
   createInviteCode, createTherapistWithInvite, ROLES, listPatientSummaries,
-  setPassword, getPlanRows, setPlan, clearPlan, publicNote, addNote, listNotes, deleteNote,
+  setPassword, setShareRecordings, getSession, setHasRecording, listExpiredRecordingIds, getPlanRows, setPlan, clearPlan, publicNote, addNote, listNotes, deleteNote,
   PLAN_MIN_REPS, PLAN_MAX_REPS, NOTE_MAX_LEN,
 };

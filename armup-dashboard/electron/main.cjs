@@ -8,6 +8,7 @@ const { app, BrowserWindow, ipcMain, session } = require('electron');
 const path = require('node:path');
 const db = require('./db.cjs');
 const auth = require('./auth.cjs');
+const recordings = require('./recordings.cjs');
 const { handleRequest } = require('./routes.cjs');
 
 const isDev = !app.isPackaged;
@@ -45,6 +46,12 @@ app.whenReady().then(() => {
   console.log('[armup] database:', dbPath);
   // Token-signing secret: created on first run, kept next to the database.
   auth.initAuth(path.join(app.getPath('userData'), 'jwt-secret.key'));
+  // Set recordings, and the clean-up of ones older than the retention period.
+  recordings.initRecordings(path.join(app.getPath('userData'), 'recordings'));
+  for (const id of db.listExpiredRecordingIds(recordings.RETENTION_DAYS)) {
+    recordings.removeRecording(id);
+    db.setHasRecording(id, false);
+  }
 
   ipcMain.handle('api:request', (_event, method, apiPath, body, token) =>
     handleRequest(String(method).toUpperCase(), String(apiPath), body, token)

@@ -3,6 +3,7 @@ import { EXERCISES } from './engine';
 import { drawExerciseHint, fitScale, RIG_BOUNDS } from './avatarDemo';
 import { UPPER_BODY_CONNECTIONS } from './usePoseSession';
 import { apiFetch } from './api';
+import { startRecording, blobToBase64 } from './setRecorder';
 
 /*
  * ExerciseCanvas
@@ -40,7 +41,9 @@ const KEY_MAP = { '1': 'curl', '2': 'raise', '3': 'press', '4': 'neck_tilt' };
 // plan: the patient's prescribed list from GET /users/:id/exercises. When a
 // therapist has set a custom plan, only those exercises are offered, in that
 // order, each with its own set size. Otherwise all four, 10 reps per set.
-export default function ExerciseCanvas({ pose, userId, onSessionSaved, plan = null }) {
+// recordingConsent: the patient has agreed that their therapist may watch
+// recordings of their sets. Nothing is recorded unless this is true.
+export default function ExerciseCanvas({ pose, userId, onSessionSaved, plan = null, recordingConsent = false }) {
   const stageCanvasRef = useRef(null);
   const demoCanvasRef = useRef(null);
   const demoSizeRef = useRef({ w: 200, h: 200 });
@@ -55,6 +58,14 @@ export default function ExerciseCanvas({ pose, userId, onSessionSaved, plan = nu
   const [confirmStop, setConfirmStop] = useState(false);
   const [result, setResult] = useState(null);   // frozen summary of the finished set
   const finishedRef = useRef(false);            // guards against saving one set twice
+
+  // Set recording (only when the patient agreed). The video is uploaded after
+  // the session itself has been saved, because it is attached to that session.
+  const recorderRef = useRef(null);
+  const blobPromiseRef = useRef(null);          // resolves to the finished video, or null
+  const savedSessionIdRef = useRef(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const [videoStatus, setVideoStatus] = useState(null); // null | 'saving' | 'saved' | 'failed'
 
   const angleReadoutRef = useRef(null); // updated directly in the draw loop below, not via React state -- no need to re-render every frame for a debug number
 
@@ -100,13 +111,22 @@ export default function ExerciseCanvas({ pose, userId, onSessionSaved, plan = nu
       if (count <= 1) {
         resetStats();
         finishedRef.current = false;
+        savedSessionIdRef.current = null;
+        blobPromiseRef.current = null;
+        if (recordingConsent) {
+          recorderRef.current = startRecording(stageCanvasRef.current);
+          setIsRecording(!!recorderRef.current);
+        }
         setPhase('active');
       } else {
         setCount(count - 1);
       }
     }, 1000);
     return () => clearTimeout(id);
-  }, [phase, count, resetStats]);
+  }, [phase, count, resetStats, recordingConsent]);
+
+  // Leaving the screen mid-set (e.g. switching to Game mode) throws the recording away.
+  useEffect(() => () => { recorderRef.current?.cancel(); }, []);
 
 
   useEffect(() => {
@@ -228,6 +248,7 @@ export default function ExerciseCanvas({ pose, userId, onSessionSaved, plan = nu
   };
 
   const startSet = () => {
+    setVideoStatus(null);
     setResult(null);
     setConfirmStop(false);
     setCount(COUNTDOWN_SECS);
@@ -254,6 +275,7 @@ export default function ExerciseCanvas({ pose, userId, onSessionSaved, plan = nu
         }),
       });
       if (!res.ok) throw new Error(`Server responded ${res.status}`);
+      savedSessionIdRef.current = (await res.json()).id;
       onSessionSaved?.();
       return true;
     } catch (err) {
@@ -261,6 +283,27 @@ export default function ExerciseCanvas({ pose, userId, onSessionSaved, plan = nu
       return false;
     } finally {
       setSaving(false);
+    }
+  };
+
+  // Sends the recorded video to the session that was just saved.
+  const uploadRecording = async () => {
+    const sessionId = savedSessionIdRef.current;
+    if (!blobPromiseRef.current || !sessionId) return;
+    setVideoStatus('saving');
+    try {
+      const blob = await blobPromiseRef.current;
+      if (!blob) throw new Error('No video was captured');
+      const res = await apiFetch(`/sessions/${sessionId}/recording`, {
+        method: 'POST',
+        body: JSON.stringify({ data: await blobToBase64(blob) }),
+      });
+      if (!res.ok) throw new Error(`Server responded ${res.status}`);
+      blobPromiseRef.current = null;
+      setVideoStatus('saved');
+    } catch (err) {
+      console.error('Could not save the video:', err);
+      setVideoStatus('failed');
     }
   };
 
@@ -274,9 +317,16 @@ export default function ExerciseCanvas({ pose, userId, onSessionSaved, plan = nu
     setConfirmStop(false);
     setPhase('complete');
     setResult({ ...final, exerciseKey: exKey, early, discarded: !willSave, saved: null });
+    // Stop the camera recording now; keep the video only if the set is kept.
+    const recorder = recorderRef.current;
+    recorderRef.current = null;
+    setIsRecording(false);
+    if (recorder && !willSave) recorder.cancel();
+    else if (recorder) blobPromiseRef.current = recorder.stop();
     if (willSave) {
       const saved = await postSession(final, exKey);
       setResult((r) => (r ? { ...r, saved } : r));
+      if (saved) await uploadRecording();
     }
   };
 
@@ -290,16 +340,21 @@ export default function ExerciseCanvas({ pose, userId, onSessionSaved, plan = nu
     if (!result) return;
     const saved = await postSession(result, result.exerciseKey);
     setResult((r) => (r ? { ...r, saved } : r));
+    if (saved) await uploadRecording();
   };
 
+  // The video upload failing never loses the session -- it is already saved.
+  const retryVideo = () => uploadRecording();
+
   const nextExercise = () => {
+    setVideoStatus(null);
     const i = allowed.indexOf(result?.exerciseKey ?? exerciseKey);
     setExercise(allowed[(i + 1) % allowed.length]);
     setResult(null);
     setPhase('idle');
   };
 
-  const backToStart = () => { setResult(null); setPhase('idle'); };
+  const backToStart = () => { setVideoStatus(null); setResult(null); setPhase('idle'); };
 
   // While a finished set's summary is up, the HUD shows its frozen numbers.
   const shown = phase === 'complete' && result ? result : stats;
@@ -355,6 +410,9 @@ export default function ExerciseCanvas({ pose, userId, onSessionSaved, plan = nu
         .exc-card-stats b { font-size:20px; color:var(--exc-limb); }
         .exc-card-stats span { font-size:10px; text-transform:uppercase; color:#9AA8C4; }
         .exc-card .exc-card-save { margin-bottom:14px; }
+        .exc-rec { position:absolute; top:56px; left:12px; display:flex; align-items:center; gap:6px; background:#241832cc; border:1px solid #ff6b8b80; color:#ff9db1; border-radius:12px; padding:5px 12px; font-size:12px; font-weight:600; }
+        .exc-rec i { width:8px; height:8px; border-radius:50%; background:#ff4d6d; animation:exc-blink 1s infinite; }
+        @keyframes exc-blink { 50% { opacity:.25; } }
         .exc-card-actions { display:flex; gap:8px; justify-content:center; flex-wrap:wrap; margin-top:12px; }
         .exc-status { margin-top:10px; font-size:12px; color:#8D8777; }
         .exc-status.err { color:#c94b4b; }
@@ -365,6 +423,7 @@ export default function ExerciseCanvas({ pose, userId, onSessionSaved, plan = nu
           <canvas ref={stageCanvasRef} />
           <div className="exc-hud">
             <div className="exc-chip">{EXERCISES[exerciseKey].name}</div>
+            {isRecording && <div className="exc-rec"><i /> Recording for your therapist</div>}
             <div className="exc-stats">
               <div><div className="val">{shown.score}</div><div className="lbl">Score</div></div>
               <div><div className="val">{shown.reps}</div><div className="lbl">Reps</div></div>
@@ -450,9 +509,19 @@ export default function ExerciseCanvas({ pose, userId, onSessionSaved, plan = nu
                         ? 'Saved to your session log.'
                         : "Couldn't save this session."}
                 </p>
+                {recordingConsent && !result.discarded && result.saved && videoStatus && (
+                  <p className="exc-card-save">
+                    {videoStatus === 'saving' && 'Saving the video for your therapist…'}
+                    {videoStatus === 'saved' && 'Video saved. Your therapist can watch it.'}
+                    {videoStatus === 'failed' && "Your session is saved, but the video couldn't be."}
+                  </p>
+                )}
                 <div className="exc-card-actions">
                   {!result.discarded && result.saved === false && (
                     <button className="exc-btn" disabled={saving} onClick={retrySave}>Try saving again</button>
+                  )}
+                  {videoStatus === 'failed' && (
+                    <button className="exc-btn" onClick={retryVideo}>Try the video again</button>
                   )}
                   <button className="exc-btn start" onClick={nextExercise}>Next exercise</button>
                   <button className="exc-btn" onClick={backToStart}>Repeat this one</button>
