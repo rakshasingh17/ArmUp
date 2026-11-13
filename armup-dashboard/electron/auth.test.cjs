@@ -144,6 +144,103 @@ test('demo login signs in only the Demo Patient', () => {
   assert.equal(call('GET', `/users/${r.body.id}`, undefined, r.body.token).status, 200);
 });
 
+const therapistToken = (name) => login(name, 'secret12').token;
+
+test('notes: therapists write, patients read their own, authors delete', () => {
+  const a = pat('note-a');
+  const b = pat('note-b');
+  const dr1 = therapistToken('dr1');
+  const dr2 = therapistToken('dr2');
+  const text = (t) => ({ body: t });
+
+  assert.equal(call('POST', `/patients/${a.id}/notes`, text('hi'), a.token).status, 403, 'patient cannot write');
+  assert.equal(call('POST', `/patients/${a.id}/notes`, text('hi')).status, 401);
+  assert.equal(call('POST', `/patients/${a.id}/notes`, text('   '), dr1).status, 400, 'empty note');
+  assert.equal(call('POST', `/patients/${a.id}/notes`, text('x'.repeat(db.NOTE_MAX_LEN + 1)), dr1).status, 400, 'too long');
+  assert.equal(call('POST', '/patients/99999/notes', text('hi'), dr1).status, 404, 'no such patient');
+  const dr1Id = db.getUserByName('dr1').id;
+  assert.equal(call('POST', `/patients/${dr1Id}/notes`, text('hi'), dr1).status, 404, 'cannot target a therapist');
+
+  const n1 = call('POST', `/patients/${a.id}/notes`, text('  Keep the elbow tucked in.  '), dr1);
+  assert.equal(n1.status, 200);
+  assert.equal(n1.body.body, 'Keep the elbow tucked in.');
+  assert.equal(n1.body.therapist_name, 'dr1');
+  const n2 = call('POST', `/patients/${a.id}/notes`, text('Great progress this week.'), dr2);
+
+  const mine = call('GET', `/users/${a.id}/notes`, undefined, a.token);
+  assert.equal(mine.status, 200);
+  assert.deepEqual(mine.body.map((n) => n.body), ['Great progress this week.', 'Keep the elbow tucked in.'], 'newest first');
+  assert.equal(call('GET', `/users/${a.id}/notes`, undefined, b.token).status, 403, 'other patient');
+  assert.equal(call('GET', `/users/${a.id}/notes`, undefined, dr1).status, 200, 'therapist can read');
+  assert.deepEqual(call('GET', `/users/${b.id}/notes`, undefined, b.token).body, [], 'no notes yet');
+
+  assert.equal(call('DELETE', `/notes/${n1.body.id}`, undefined, a.token).status, 403, 'patient cannot delete');
+  assert.equal(call('DELETE', `/notes/${n1.body.id}`, undefined, dr2).status, 404, 'not the author');
+  assert.equal(call('GET', `/users/${a.id}/notes`, undefined, a.token).body.length, 2, 'still there');
+  assert.equal(call('DELETE', `/notes/${n1.body.id}`, undefined, dr1).status, 200, 'author deletes');
+  assert.equal(call('GET', `/users/${a.id}/notes`, undefined, a.token).body.length, 1);
+  assert.equal(n2.status, 200);
+});
+
+test('plan: therapist-only editing, validated, replaces the default, can be reset', () => {
+  const a = pat('plan-a'); // neck_stiffness
+  const b = pat('plan-b');
+  const dr = therapistToken('dr1');
+  const put = (token, items) => call('PUT', `/patients/${a.id}/plan`, { exercises: items }, token);
+
+  assert.equal(call('GET', `/patients/${a.id}/plan`, undefined, a.token).status, 403);
+  assert.equal(put(a.token, [{ key: 'curl', reps_per_set: 8 }]).status, 403, 'patient cannot edit own plan');
+  assert.equal(call('DELETE', `/patients/${a.id}/plan`, undefined, a.token).status, 403);
+  assert.equal(put(undefined, [{ key: 'curl', reps_per_set: 8 }]).status, 401);
+
+  // Starting point: the default plan from conditions, pre-ticked.
+  const start = call('GET', `/patients/${a.id}/plan`, undefined, dr);
+  assert.equal(start.status, 200);
+  assert.equal(start.body.custom, false);
+  assert.equal(start.body.exercises.length, 4);
+  assert.ok(start.body.exercises.some((e) => e.enabled));
+  assert.ok(start.body.exercises.every((e) => e.reps_per_set === 10));
+  const before = call('GET', `/users/${a.id}/exercises`, undefined, a.token).body;
+  assert.ok(before.length >= 1 && before.every((e) => e.custom === false && e.reps_per_set === null));
+
+  // Validation (and a rejected save leaves things as they were).
+  for (const bad of [
+    [], undefined,
+    [{ key: 'nope', reps_per_set: 8 }],
+    [{ key: 'curl', reps_per_set: 8 }, { key: 'curl', reps_per_set: 9 }],
+    [{ key: 'curl', reps_per_set: db.PLAN_MIN_REPS - 1 }],
+    [{ key: 'curl', reps_per_set: db.PLAN_MAX_REPS + 1 }],
+    [{ key: 'curl', reps_per_set: 7.5 }],
+    [{ key: 'curl', reps_per_set: '8' }],
+  ]) {
+    assert.equal(put(dr, bad).status, 400, JSON.stringify(bad));
+  }
+  assert.equal(call('PUT', '/patients/99999/plan', { exercises: [{ key: 'curl', reps_per_set: 8 }] }, dr).status, 404);
+  assert.equal(call('GET', `/users/${a.id}/exercises`, undefined, a.token).body.length, before.length, 'unchanged');
+
+  // A real plan: order and reps are kept, and it replaces the default.
+  assert.equal(put(dr, [{ key: 'raise', reps_per_set: 8 }, { key: 'curl', reps_per_set: 12 }]).status, 200);
+  const mine = call('GET', `/users/${a.id}/exercises`, undefined, a.token).body;
+  assert.deepEqual(mine.map((e) => [e.key, e.reps_per_set, e.priority, e.custom]),
+    [['raise', 8, 1, true], ['curl', 12, 2, true]]);
+  const edit = call('GET', `/patients/${a.id}/plan`, undefined, dr).body;
+  assert.equal(edit.custom, true);
+  assert.deepEqual(edit.exercises.filter((e) => e.enabled).map((e) => e.key).sort(), ['curl', 'raise']);
+  assert.equal(edit.exercises.find((e) => e.key === 'curl').reps_per_set, 12);
+
+  // Saving again replaces (no leftovers), and other patients are unaffected.
+  assert.equal(put(dr, [{ key: 'press', reps_per_set: 5 }]).status, 200);
+  assert.deepEqual(call('GET', `/users/${a.id}/exercises`, undefined, a.token).body.map((e) => e.key), ['press']);
+  assert.ok(call('GET', `/users/${b.id}/exercises`, undefined, b.token).body.every((e) => !e.custom));
+  assert.equal(call('GET', `/users/${a.id}/exercises`, undefined, b.token).status, 403);
+
+  // Reset goes back to the default plan.
+  assert.equal(call('DELETE', `/patients/${a.id}/plan`, undefined, dr).status, 200);
+  const after = call('GET', `/users/${a.id}/exercises`, undefined, a.token).body;
+  assert.deepEqual(after.map((e) => e.key), before.map((e) => e.key));
+  assert.ok(after.every((e) => !e.custom));
+});
+
 test('a database from before roles gets the role column, everyone a patient', () => {
   const Database = require('better-sqlite3');
   const old = path.join(tmp, 'old.db');

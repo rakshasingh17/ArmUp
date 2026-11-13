@@ -44,6 +44,9 @@ const CONDITION_LABELS = {
 // Handed out for the demo. Change these before real use.
 const DEMO_INVITE_CODES = ['ARMUP-THERAPIST-1', 'ARMUP-THERAPIST-2', 'ARMUP-THERAPIST-3'];
 const ROLES = ['patient', 'therapist'];
+const PLAN_MIN_REPS = 3;
+const PLAN_MAX_REPS = 30;
+const NOTE_MAX_LEN = 1000;
 
 let db = null;
 
@@ -98,6 +101,26 @@ function initSchema() {
       exercise_key VARCHAR NOT NULL REFERENCES exercises(key),
       starting_tolerance FLOAT,
       priority INTEGER DEFAULT 1
+    );
+    -- A therapist's custom exercise plan for one patient. No rows = the patient
+    -- uses the default plan that comes from their conditions.
+    CREATE TABLE IF NOT EXISTS patient_plan (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      exercise_key VARCHAR NOT NULL,
+      reps_per_set INTEGER NOT NULL,
+      position INTEGER NOT NULL,
+      set_by INTEGER REFERENCES users(id),
+      updated_at DATETIME,
+      UNIQUE (user_id, exercise_key)
+    );
+    -- Notes a therapist leaves for a patient.
+    CREATE TABLE IF NOT EXISTS therapist_notes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      patient_id INTEGER NOT NULL REFERENCES users(id),
+      therapist_id INTEGER NOT NULL REFERENCES users(id),
+      body TEXT NOT NULL,
+      created_at DATETIME
     );
     -- Single-use therapist invite codes. Only a hash of each code is stored.
     CREATE TABLE IF NOT EXISTS invite_codes (
@@ -302,7 +325,21 @@ function listConditions() {
   return conditions.sort((a, b) => a.label.localeCompare(b.label));
 }
 
+// What the patient is prescribed. A therapist's custom plan wins; otherwise
+// the default plan from the patient's conditions. Each row has:
+// exercise_key, priority, starting_tolerance, reps_per_set (null = default
+// set size), custom (true when it comes from a therapist's plan).
 function getRecommendedExercises(userId) {
+  const custom = getPlanRows(userId);
+  if (custom.length) {
+    return custom.map((r) => ({
+      exercise_key: r.exercise_key,
+      priority: r.position + 1,
+      starting_tolerance: null,
+      reps_per_set: r.reps_per_set,
+      custom: true,
+    }));
+  }
   const user = getUser(userId);
   if (!user || !tagsOf(user).length) return [];
   const tags = tagsOf(user);
@@ -317,7 +354,80 @@ function getRecommendedExercises(userId) {
   // highest-priority (lowest number) row.
   const plan = new Map();
   for (const r of rows) if (!plan.has(r.exercise_key)) plan.set(r.exercise_key, r);
-  return [...plan.values()];
+  return [...plan.values()].map((r) => ({ ...r, reps_per_set: null, custom: false }));
+}
+
+// ---------------------------------------------------------------
+// Custom exercise plans (set by a therapist)
+// ---------------------------------------------------------------
+function getPlanRows(userId) {
+  return db
+    .prepare('SELECT * FROM patient_plan WHERE user_id = ? ORDER BY position')
+    .all(userId);
+}
+
+// items: [{ key, reps_per_set }] in the order they should be shown.
+// Replaces the whole plan, all-or-nothing.
+function setPlan(userId, therapistId, items) {
+  const run = db.transaction(() => {
+    db.prepare('DELETE FROM patient_plan WHERE user_id = ?').run(userId);
+    const ins = db.prepare(
+      `INSERT INTO patient_plan (user_id, exercise_key, reps_per_set, position, set_by, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    );
+    items.forEach((it, i) => ins.run(userId, it.key, it.reps_per_set, i, therapistId, nowUtcForDb()));
+  });
+  run();
+}
+
+function clearPlan(userId) {
+  db.prepare('DELETE FROM patient_plan WHERE user_id = ?').run(userId);
+}
+
+// ---------------------------------------------------------------
+// Therapist notes
+// ---------------------------------------------------------------
+function publicNote(n) {
+  return {
+    id: n.id,
+    body: n.body,
+    created_at: utcIso(n.created_at),
+    therapist_id: n.therapist_id,
+    therapist_name: n.therapist_name,
+  };
+}
+
+function addNote(patientId, therapistId, body) {
+  const info = db
+    .prepare('INSERT INTO therapist_notes (patient_id, therapist_id, body, created_at) VALUES (?, ?, ?, ?)')
+    .run(patientId, therapistId, body, nowUtcForDb());
+  return getNote(Number(info.lastInsertRowid));
+}
+
+function getNote(id) {
+  return db
+    .prepare(
+      `SELECT n.*, u.name AS therapist_name FROM therapist_notes n
+       JOIN users u ON u.id = n.therapist_id WHERE n.id = ?`
+    )
+    .get(id);
+}
+
+// Newest first.
+function listNotes(patientId) {
+  return db
+    .prepare(
+      `SELECT n.*, u.name AS therapist_name FROM therapist_notes n
+       JOIN users u ON u.id = n.therapist_id
+       WHERE n.patient_id = ? ORDER BY n.id DESC`
+    )
+    .all(patientId);
+}
+
+// A therapist can delete only their own notes. Returns true if one was removed.
+function deleteNote(noteId, therapistId) {
+  return db.prepare('DELETE FROM therapist_notes WHERE id = ? AND therapist_id = ?')
+    .run(noteId, therapistId).changes > 0;
 }
 
 function logSession(userId, exerciseKey, reps, score, accuracy, maxStreak, level) {
@@ -355,4 +465,6 @@ module.exports = {
   listConditions, getRecommendedExercises, logSession, getHistory,
   publicUser, publicSession, hashPassword, verifyPassword,
   createInviteCode, createTherapistWithInvite, ROLES, listPatientSummaries,
+  getPlanRows, setPlan, clearPlan, publicNote, addNote, listNotes, deleteNote,
+  PLAN_MIN_REPS, PLAN_MAX_REPS, NOTE_MAX_LEN,
 };

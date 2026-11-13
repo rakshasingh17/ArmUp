@@ -37,7 +37,10 @@ const MIN_SAVE_REPS = 5;    // stopping early with fewer reps than this saves no
 const COUNTDOWN_SECS = 3;   // "get in position" countdown before the set starts
 const KEY_MAP = { '1': 'curl', '2': 'raise', '3': 'press', '4': 'neck_tilt' };
 
-export default function ExerciseCanvas({ pose, userId, onSessionSaved }) {
+// plan: the patient's prescribed list from GET /users/:id/exercises. When a
+// therapist has set a custom plan, only those exercises are offered, in that
+// order, each with its own set size. Otherwise all four, 10 reps per set.
+export default function ExerciseCanvas({ pose, userId, onSessionSaved, plan = null }) {
   const stageCanvasRef = useRef(null);
   const demoCanvasRef = useRef(null);
   const demoSizeRef = useRef({ w: 200, h: 200 });
@@ -65,11 +68,30 @@ export default function ExerciseCanvas({ pose, userId, onSessionSaved }) {
     feedback, formMessage, fps,
   } = pose;
 
+  const customPlan = plan && plan.length && plan.every((p) => p.custom) ? plan : null;
+  const planKeys = customPlan ? customPlan.map((p) => p.key).filter((k) => EXERCISES[k]) : [];
+  const allowed = planKeys.length ? planKeys : EXERCISE_ORDER;
+  const allowedId = allowed.join(',');
+  const setReps = (customPlan && customPlan.find((p) => p.key === exerciseKey)?.reps_per_set) || SET_REPS;
+  const minSave = Math.min(MIN_SAVE_REPS, setReps - 1);
+
+  // Number keys pick the Nth exercise that is on offer.
   useEffect(() => {
-    const onKey = (e) => { if (phase === 'idle' && KEY_MAP[e.key]) setExercise(KEY_MAP[e.key]); };
+    const onKey = (e) => {
+      const key = KEY_MAP[e.key] && allowed[Number(e.key) - 1];
+      if (phase === 'idle' && key) setExercise(key);
+    };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [setExercise, phase]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [setExercise, phase, allowedId]);
+
+  // If the current exercise isn't in the plan (the tracker starts on curl),
+  // move to the plan's first one.
+  useEffect(() => {
+    if (phase === 'idle' && !allowed.includes(exerciseKey)) setExercise(allowed[0]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, exerciseKey, allowedId]);
 
   // 3-2-1 countdown, then the set begins with fresh counters.
   useEffect(() => {
@@ -242,12 +264,12 @@ export default function ExerciseCanvas({ pose, userId, onSessionSaved }) {
   };
 
   // Ends the set. A full set always saves; an early stop saves only if it
-  // reached MIN_SAVE_REPS, so a couple of stray reps never become a session.
+  // reached minSave, so a couple of stray reps never become a session.
   const finishSet = async (final, early) => {
     if (finishedRef.current) return;
     finishedRef.current = true;
     const exKey = sessionRef.current.exerciseKey;
-    const willSave = !early || final.reps >= MIN_SAVE_REPS;
+    const willSave = !early || final.reps >= minSave;
     setConfirmStop(false);
     setPhase('complete');
     setResult({ ...final, exerciseKey: exKey, early, discarded: !willSave, saved: null });
@@ -259,7 +281,7 @@ export default function ExerciseCanvas({ pose, userId, onSessionSaved }) {
 
   // Reaching the target ends the set and saves it automatically.
   useEffect(() => {
-    if (phase === 'active' && stats.reps >= SET_REPS) finishSet(stats, false);
+    if (phase === 'active' && stats.reps >= setReps) finishSet(stats, false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, stats.reps]);
 
@@ -270,8 +292,8 @@ export default function ExerciseCanvas({ pose, userId, onSessionSaved }) {
   };
 
   const nextExercise = () => {
-    const i = EXERCISE_ORDER.indexOf(result?.exerciseKey ?? exerciseKey);
-    setExercise(EXERCISE_ORDER[(i + 1) % EXERCISE_ORDER.length]);
+    const i = allowed.indexOf(result?.exerciseKey ?? exerciseKey);
+    setExercise(allowed[(i + 1) % allowed.length]);
     setResult(null);
     setPhase('idle');
   };
@@ -359,10 +381,10 @@ export default function ExerciseCanvas({ pose, userId, onSessionSaved }) {
             {(phase === 'active' || phase === 'countdown') && (
               <div className="exc-progress">
                 <div className="exc-progress-label">
-                  {phase === 'countdown' ? 'Get ready' : `Rep ${Math.min(stats.reps, SET_REPS)} of ${SET_REPS}`}
+                  {phase === 'countdown' ? 'Get ready' : `Rep ${Math.min(stats.reps, setReps)} of ${setReps}`}
                 </div>
                 <div className="exc-progress-track">
-                  <div className="exc-progress-fill" style={{ width: `${phase === 'active' ? Math.min(100, (stats.reps / SET_REPS) * 100) : 0}%` }} />
+                  <div className="exc-progress-fill" style={{ width: `${phase === 'active' ? Math.min(100, (stats.reps / setReps) * 100) : 0}%` }} />
                 </div>
               </div>
             )}
@@ -384,7 +406,7 @@ export default function ExerciseCanvas({ pose, userId, onSessionSaved }) {
           {cameraOn && phase === 'idle' && (
             <div className="exc-ready">
               <div className="exc-ready-title">{EXERCISES[exerciseKey].name}</div>
-              <div className="exc-ready-sub">One set = {SET_REPS} reps. Stand where your arm is fully in view.</div>
+              <div className="exc-ready-sub">One set = {setReps} reps. Stand where your arm is fully in view.</div>
               <button className="exc-btn start" onClick={startSet}>Start set</button>
             </div>
           )}
@@ -396,9 +418,9 @@ export default function ExerciseCanvas({ pose, userId, onSessionSaved }) {
               <div className="exc-card">
                 <h3>Stop this set?</h3>
                 <p>
-                  {stats.reps >= MIN_SAVE_REPS
-                    ? `You've done ${stats.reps} of ${SET_REPS} reps. They'll be saved as a shorter session.`
-                    : `You've done ${stats.reps} of ${SET_REPS} reps. It takes at least ${MIN_SAVE_REPS} to save a session, so this one won't be saved.`}
+                  {stats.reps >= minSave
+                    ? `You've done ${stats.reps} of ${setReps} reps. They'll be saved as a shorter session.`
+                    : `You've done ${stats.reps} of ${setReps} reps. It takes at least ${minSave} to save a session, so this one won't be saved.`}
                 </p>
                 <div className="exc-card-actions">
                   <button className="exc-btn start" onClick={() => setConfirmStop(false)}>Keep going</button>
@@ -411,7 +433,7 @@ export default function ExerciseCanvas({ pose, userId, onSessionSaved }) {
             <div className="exc-overlay">
               <div className="exc-card">
                 <h3>{result.discarded ? 'Set not saved' : result.early ? 'Set stopped early' : 'Set complete!'}</h3>
-                <p className="exc-card-ex">{EXERCISES[result.exerciseKey].name} · {result.reps} of {SET_REPS} reps</p>
+                <p className="exc-card-ex">{EXERCISES[result.exerciseKey].name} · {result.reps} of {setReps} reps</p>
                 <div className="exc-card-stats">
                   <div><b>{result.score}</b><span>Score</span></div>
                   <div><b>{result.accuracy}%</b><span>Accuracy</span></div>
@@ -420,7 +442,7 @@ export default function ExerciseCanvas({ pose, userId, onSessionSaved }) {
                 </div>
                 <p className="exc-card-save">
                   {result.discarded
-                    ? `Fewer than ${MIN_SAVE_REPS} reps, so nothing was recorded.`
+                    ? `Fewer than ${minSave} reps, so nothing was recorded.`
                     : saving || result.saved === null
                       ? 'Saving your session…'
                       : result.saved
@@ -448,7 +470,7 @@ export default function ExerciseCanvas({ pose, userId, onSessionSaved }) {
       </div>
 
       <div className="flex gap-2 flex-wrap justify-center mt-4">
-        {EXERCISE_ORDER.map((key, i) => (
+        {allowed.map((key, i) => (
           <button
             key={key}
             className={`exc-btn${key === exerciseKey ? ' active' : ''}`}

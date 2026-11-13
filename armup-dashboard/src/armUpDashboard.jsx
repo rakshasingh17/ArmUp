@@ -53,6 +53,7 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
   const [user, setUser] = useState(null);
   const [recommended, setRecommended] = useState([]);
   const [sessions, setSessions] = useState([]);
+  const [notes, setNotes] = useState([]); // from the patient's therapist(s), newest first
   const [loading, setLoading] = useState(true);
   const [mode, setMode] = useState('exercise'); // 'exercise' | 'game'
 
@@ -67,10 +68,11 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
   const fetchDashboardData = async (id) => {
     setLoading(true);
     try {
-      const [uRes, rRes, sRes] = await Promise.all([
+      const [uRes, rRes, sRes, nRes] = await Promise.all([
         apiFetch(`/users/${id}`).then(r => r.ok ? r.json() : null),
         apiFetch(`/users/${id}/exercises`).then(r => r.ok ? r.json() : []),
-        apiFetch(`/users/${id}/sessions`).then(r => r.ok ? r.json() : [])
+        apiFetch(`/users/${id}/sessions`).then(r => r.ok ? r.json() : []),
+        apiFetch(`/users/${id}/notes`).then(r => r.ok ? r.json() : [])
       ]);
       // A saved login can outlive its account (e.g. armup.db was deleted).
       // Real logins go back to the start; the demo view keeps its old behavior.
@@ -81,6 +83,7 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
       setUser(uRes);
       setRecommended(rRes);
       setSessions(sRes);
+      setNotes(nRes);
     } catch (err) {
       console.error("Backend offline or unreachable:", err);
     } finally {
@@ -276,7 +279,7 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
             of the dashboard layout. */}
         <div id="exercise-stage" className="mb-8 scroll-mt-6">
           {mode === 'exercise' ? (
-            <ExerciseCanvas pose={pose} userId={userId} onSessionSaved={() => fetchDashboardData(userId)} />
+            <ExerciseCanvas pose={pose} userId={userId} plan={recommended} onSessionSaved={() => fetchDashboardData(userId)} />
           ) : (
             <GameCanvas pose={pose} userId={userId} onSessionSaved={() => fetchDashboardData(userId)} />
           )}
@@ -447,6 +450,27 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
             </div>
 
             <div className="bg-white border border-[#E7E2D4] rounded-3xl p-5 shadow-sm">
+              <p className="text-[11px] uppercase tracking-wide text-[#8D8777] mb-4">From your therapist</p>
+              {notes.length > 0 ? (
+                <ul className="space-y-3 max-h-64 overflow-y-auto">
+                  {notes.map((n) => (
+                    <li key={n.id} className="rounded-2xl bg-[#FBF9F3] border border-[#F0EBDD] px-4 py-3">
+                      <p className="text-sm whitespace-pre-wrap break-words">{n.body}</p>
+                      <p className="text-[11px] text-[#8D8777] mt-2">
+                        {n.therapist_name}
+                        {n.created_at && !Number.isNaN(new Date(n.created_at).getTime())
+                          ? ` · ${new Date(n.created_at).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}`
+                          : ''}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-xs text-[#B7B1A0] italic">No notes from your therapist yet.</p>
+              )}
+            </div>
+
+            <div className="bg-white border border-[#E7E2D4] rounded-3xl p-5 shadow-sm">
               <div className="flex items-center justify-between mb-4">
                 <p className="text-[11px] uppercase tracking-wide text-[#8D8777]">Prescribed plan</p>
                 <span className="text-xs bg-[#F6F1E7] text-[#8D8777] px-2 py-0.5 rounded-full font-mono">
@@ -464,7 +488,9 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
                           <p className="font-display text-sm font-medium" style={{ color: style.ink }}>{item.name}</p>
                         </div>
                         <p className="text-xs mt-0.5" style={{ color: style.ink, opacity: 0.75 }}>
-                          Start tolerance: {item.starting_tolerance}°
+                          {item.custom
+                            ? `${item.reps_per_set} reps per set`
+                            : `Start tolerance: ${item.starting_tolerance}°`}
                         </p>
                       </div>
                       <button

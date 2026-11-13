@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { Dumbbell, Users, LogOut, ArrowLeft, Loader2, Activity, Target, Flame, ClipboardList } from 'lucide-react';
 import { apiFetch } from './api';
 import InviteCodeButton from './InviteCodeButton';
+import NotesCard from './NotesCard';
+import PlanEditor from './PlanEditor';
 
 // Therapist home. Separate from the patient dashboard: no camera, no
 // exercises. A list of patients, and a read-only progress page for each.
@@ -52,18 +54,22 @@ export default function TherapistDashboard({ userId, onExit }) {
   }, [userId]);
 
   const openPatient = async (patient) => {
-    setSelected({ id: patient.id, name: patient.name, loading: true, error: null, sessions: [] });
+    const base = { id: patient.id, name: patient.name, sessions: [], notes: [], plan: null };
+    setSelected({ ...base, loading: true, error: null });
     try {
-      const res = await apiFetch(`/users/${patient.id}/sessions`);
-      if (!res.ok) throw new Error(`Sessions failed (${res.status})`);
-      const sessions = await res.json();
-      setSelected({ id: patient.id, name: patient.name, loading: false, error: null, sessions });
+      const [sRes, nRes, pRes] = await Promise.all([
+        apiFetch(`/users/${patient.id}/sessions`),
+        apiFetch(`/users/${patient.id}/notes`),
+        apiFetch(`/patients/${patient.id}/plan`),
+      ]);
+      if (!sRes.ok || !nRes.ok || !pRes.ok) {
+        throw new Error(`Patient details failed (${sRes.status}/${nRes.status}/${pRes.status})`);
+      }
+      const [sessions, notes, plan] = await Promise.all([sRes.json(), nRes.json(), pRes.json()]);
+      setSelected({ ...base, loading: false, error: null, sessions, notes, plan });
     } catch (err) {
       console.error(err);
-      setSelected({
-        id: patient.id, name: patient.name, loading: false, sessions: [],
-        error: "Couldn't load this patient's sessions.",
-      });
+      setSelected({ ...base, loading: false, error: "Couldn't load this patient's details." });
     }
   };
 
@@ -113,7 +119,7 @@ export default function TherapistDashboard({ userId, onExit }) {
         {!selected ? (
           <PatientList me={me} patients={patients} error={listError} onOpen={openPatient} />
         ) : (
-          <PatientDetail selected={selected} summary={selectedSummary} onBack={() => setSelected(null)} />
+          <PatientDetail selected={selected} summary={selectedSummary} therapistId={userId} onBack={() => setSelected(null)} />
         )}
       </main>
     </div>
@@ -180,7 +186,7 @@ function PatientList({ me, patients, error, onOpen }) {
   );
 }
 
-function PatientDetail({ selected, summary, onBack }) {
+function PatientDetail({ selected, summary, therapistId, onBack }) {
   const { sessions } = selected;
   const totalReps = sessions.reduce((a, s) => a + s.reps, 0);
   const avgAccuracy = sessions.length
@@ -268,6 +274,17 @@ function PatientDetail({ selected, summary, onBack }) {
                 </tbody>
               </table>
             )}
+          </div>
+
+          {/* key = patient id, so switching patients always starts from fresh data */}
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 mt-6 items-start">
+            <PlanEditor key={`plan-${selected.id}`} patientId={selected.id} initialPlan={selected.plan} />
+            <NotesCard
+              key={`notes-${selected.id}`}
+              patientId={selected.id}
+              therapistId={therapistId}
+              initialNotes={selected.notes}
+            />
           </div>
         </>
       )}

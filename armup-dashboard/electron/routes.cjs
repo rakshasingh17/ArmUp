@@ -23,6 +23,8 @@ const routes = [];
 const route = (method, pattern, handler, { public: isPublic = false } = {}) =>
   routes.push({ method, pattern, handler, isPublic });
 
+// Matches SET_REPS in ExerciseCanvas.jsx (the set size when no plan says otherwise).
+const DEFAULT_SET_REPS = 10;
 const isTherapist = (who) => who.role === 'therapist';
 // A patient may touch only their own records; a therapist may read any patient's.
 const canReadUser = (who, id) => who.sub === id || isTherapist(who);
@@ -109,8 +111,94 @@ route('GET', /^\/users\/(\d+)\/exercises$/, ([id], _body, who) => {
       name: names[r.exercise_key] || r.exercise_key,
       priority: r.priority,
       starting_tolerance: r.starting_tolerance,
+      reps_per_set: r.reps_per_set,
+      custom: r.custom,
     }))
   );
+});
+
+// ---------------------------------------------------------------
+// Therapist: notes and exercise plans for a patient
+// ---------------------------------------------------------------
+// Therapist-only routes below start with this check. Returns an error
+// response to send back, or null when the caller may continue.
+function therapistOnPatient(who, patientId) {
+  if (!isTherapist(who)) return fail(403, 'Only therapists can do this.');
+  const patient = db.getUser(patientId);
+  if (!patient || patient.role !== 'patient') return fail(404, 'Patient not found.');
+  return null;
+}
+
+route('POST', /^\/patients\/(\d+)\/notes$/, ([id], body, who) => {
+  const denied = therapistOnPatient(who, Number(id));
+  if (denied) return denied;
+  const text = String(body?.body ?? '').trim();
+  if (!text) return fail(400, 'Please write a note first.');
+  if (text.length > db.NOTE_MAX_LEN) return fail(400, `Notes can be at most ${db.NOTE_MAX_LEN} characters.`);
+  return ok(db.publicNote(db.addNote(Number(id), who.sub, text)));
+});
+
+// A patient reads their own notes; a therapist can read any patient's.
+route('GET', /^\/users\/(\d+)\/notes$/, ([id], _body, who) => {
+  if (!canReadUser(who, Number(id))) return fail(403, 'Not allowed.');
+  if (!db.getUser(Number(id))) return fail(404, 'User not found');
+  return ok(db.listNotes(Number(id)).map(db.publicNote));
+});
+
+route('DELETE', /^\/notes\/(\d+)$/, ([id], _body, who) => {
+  if (!isTherapist(who)) return fail(403, 'Only therapists can do this.');
+  // Only the author can delete; anyone else gets the same answer as a missing note.
+  return db.deleteNote(Number(id), who.sub) ? ok({ deleted: true }) : fail(404, 'Note not found.');
+});
+
+// The plan editor's starting point: every exercise, with whether it is in the
+// patient's plan. If no custom plan exists yet, the patient's default plan
+// (from their conditions) is pre-ticked.
+route('GET', /^\/patients\/(\d+)\/plan$/, ([id], _body, who) => {
+  const denied = therapistOnPatient(who, Number(id));
+  if (denied) return denied;
+  const current = db.getRecommendedExercises(Number(id));
+  const byKey = new Map(current.map((r) => [r.exercise_key, r]));
+  return ok({
+    custom: current.some((r) => r.custom),
+    min_reps: db.PLAN_MIN_REPS,
+    max_reps: db.PLAN_MAX_REPS,
+    default_reps: DEFAULT_SET_REPS,
+    exercises: db.listExercises().map((e) => ({
+      key: e.key,
+      name: e.name,
+      enabled: byKey.has(e.key),
+      reps_per_set: byKey.get(e.key)?.reps_per_set ?? DEFAULT_SET_REPS,
+    })),
+  });
+});
+
+route('PUT', /^\/patients\/(\d+)\/plan$/, ([id], body, who) => {
+  const denied = therapistOnPatient(who, Number(id));
+  if (denied) return denied;
+  const items = body?.exercises;
+  if (!Array.isArray(items) || !items.length) return fail(400, 'Choose at least one exercise.');
+  const valid = new Set(db.listExercises().map((e) => e.key));
+  const seen = new Set();
+  for (const it of items) {
+    if (!valid.has(it?.key)) return fail(400, `Unknown exercise: ${it?.key}`);
+    if (seen.has(it.key)) return fail(400, `Exercise listed twice: ${it.key}`);
+    seen.add(it.key);
+    const r = it.reps_per_set;
+    if (!Number.isInteger(r) || r < db.PLAN_MIN_REPS || r > db.PLAN_MAX_REPS) {
+      return fail(400, `Reps per set must be a whole number from ${db.PLAN_MIN_REPS} to ${db.PLAN_MAX_REPS}.`);
+    }
+  }
+  db.setPlan(Number(id), who.sub, items.map((it) => ({ key: it.key, reps_per_set: it.reps_per_set })));
+  return ok({ saved: true });
+});
+
+// Back to the default plan from the patient's conditions.
+route('DELETE', /^\/patients\/(\d+)\/plan$/, ([id], _body, who) => {
+  const denied = therapistOnPatient(who, Number(id));
+  if (denied) return denied;
+  db.clearPlan(Number(id));
+  return ok({ reset: true });
 });
 
 route('POST', /^\/sessions$/, (_p, body, who) => {
