@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Dumbbell, Users, LogOut, ArrowLeft, Loader2, Activity, Target, Flame, ClipboardList } from 'lucide-react';
+import { Dumbbell, Users, LogOut, ArrowLeft, Loader2, Activity, Target, Flame, ClipboardList, ShieldAlert } from 'lucide-react';
 import { apiFetch } from './api';
 import InviteCodeButton from './InviteCodeButton';
 import NotesCard from './NotesCard';
@@ -17,6 +17,15 @@ const EXERCISE_NAMES = {
   neck_tilt: 'Owl Neck Tilt',
 };
 const exerciseName = (key) => EXERCISE_NAMES[key] || key;
+
+// Form faults the rep engine flags (FORM_RULES in engine.js). The neck tilt has
+// no form rule, so its sessions show no form information.
+const FAULT_LABELS = {
+  elbow_drift: 'Elbow drifting',
+  too_high: 'Arm too high',
+  lean_back: 'Leaning back',
+};
+const FORM_TRACKED = new Set(['curl', 'raise', 'press']);
 
 const prettyTag = (tag) => tag.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
 
@@ -195,11 +204,28 @@ function PatientDetail({ selected, summary, therapistId, onBack }) {
   const bestStreak = sessions.length ? Math.max(...sessions.map((s) => s.max_streak)) : 0;
   const recent = [...sessions].reverse().slice(0, 15); // newest first
 
+  // Form: only sessions that recorded it (older ones have form_faults = null).
+  const formSessions = sessions.filter((s) => s.form_faults && FORM_TRACKED.has(s.exercise_key));
+  const flagged = formSessions.filter((s) => Object.keys(s.form_faults).length > 0);
+  const faultTotals = {};
+  for (const s of formSessions) {
+    for (const [id, n] of Object.entries(s.form_faults)) faultTotals[id] = (faultTotals[id] || 0) + n;
+  }
+  const topFault = Object.entries(faultTotals).sort((a, b) => b[1] - a[1])[0];
+
   const stats = [
     { label: 'Sessions', value: sessions.length, icon: ClipboardList },
     { label: 'Total reps', value: totalReps, icon: Activity },
     { label: 'Avg accuracy', value: `${avgAccuracy}%`, icon: Target },
     { label: 'Best streak', value: bestStreak, icon: Flame },
+    {
+      label: 'Sessions with form flags',
+      value: formSessions.length ? `${flagged.length}/${formSessions.length}` : '—',
+      icon: ShieldAlert,
+      sub: topFault
+        ? `Most common: ${FAULT_LABELS[topFault[0]] || topFault[0]}`
+        : formSessions.length ? 'No form problems flagged' : 'No form data yet',
+    },
   ];
 
   return (
@@ -236,12 +262,13 @@ function PatientDetail({ selected, summary, therapistId, onBack }) {
         <p className="text-xs text-[#B15C7E] bg-[#F3D9E2] rounded-xl px-3 py-2 inline-block">{selected.error}</p>
       ) : (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-            {stats.map(({ label, value, icon: Icon }) => (
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+            {stats.map(({ label, value, icon: Icon, sub }) => (
               <div key={label} className="bg-white border border-[#E7E2D4] rounded-3xl p-5">
                 <Icon size={18} className="text-[#8D8777] mb-3" />
                 <p className="font-display text-2xl font-semibold">{value}</p>
                 <p className="text-xs text-[#8D8777] mt-0.5">{label}</p>
+                {sub && <p className="text-[11px] text-[#6B6450] mt-1.5">{sub}</p>}
               </div>
             ))}
           </div>
@@ -258,6 +285,7 @@ function PatientDetail({ selected, summary, therapistId, onBack }) {
                     <th className="px-3 py-2 font-medium">Exercise</th>
                     <th className="px-3 py-2 font-medium">Reps</th>
                     <th className="px-3 py-2 font-medium">Accuracy</th>
+                    <th className="px-3 py-2 font-medium">Form</th>
                     <th className="px-6 py-2 font-medium">Score</th>
                   </tr>
                 </thead>
@@ -268,6 +296,7 @@ function PatientDetail({ selected, summary, therapistId, onBack }) {
                       <td className="px-3 py-3">{exerciseName(s.exercise_key)}</td>
                       <td className="px-3 py-3">{s.reps}</td>
                       <td className="px-3 py-3">{Math.round(s.accuracy)}%</td>
+                      <td className="px-3 py-3"><FormCell session={s} /></td>
                       <td className="px-6 py-3">{s.score}</td>
                     </tr>
                   ))}
@@ -289,5 +318,23 @@ function PatientDetail({ selected, summary, therapistId, onBack }) {
         </>
       )}
     </>
+  );
+}
+
+// "Good" = recorded with no faults; chips = faults with counts; "—" = not tracked / not recorded.
+function FormCell({ session }) {
+  if (!FORM_TRACKED.has(session.exercise_key) || !session.form_faults) {
+    return <span className="text-[#B7B1A0]">—</span>;
+  }
+  const entries = Object.entries(session.form_faults);
+  if (!entries.length) return <span className="text-[#2E6B4A]">Good</span>;
+  return (
+    <span className="flex flex-wrap gap-1">
+      {entries.map(([id, n]) => (
+        <span key={id} className="bg-[#F3D9E2] text-[#B15C7E] text-[11px] px-2 py-0.5 rounded-full whitespace-nowrap">
+          {FAULT_LABELS[id] || id} ×{n}
+        </span>
+      ))}
+    </span>
   );
 }

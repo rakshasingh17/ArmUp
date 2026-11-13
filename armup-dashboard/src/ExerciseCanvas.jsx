@@ -250,6 +250,7 @@ export default function ExerciseCanvas({ pose, userId, onSessionSaved, plan = nu
           accuracy: final.accuracy,
           max_streak: final.maxStreak,
           level: final.level,
+          form_faults: final.formFaults || {},
         }),
       });
       if (!res.ok) throw new Error(`Server responded ${res.status}`);

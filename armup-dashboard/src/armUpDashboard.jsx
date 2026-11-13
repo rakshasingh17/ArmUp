@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   Activity, Award, CheckCircle2, Dumbbell, Flame, LayoutDashboard,
-  ClipboardList, Users, Settings, LogOut, Play, ShieldAlert, User
+  ClipboardList, Settings, LogOut, Play, ShieldAlert, User
 } from 'lucide-react';
 import GameCanvas from './GameCanvas';
 import ExerciseCanvas from './ExerciseCanvas';
@@ -42,7 +42,6 @@ function formatIST(ts) {
 const NAV_ITEMS = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, active: true },
   { id: 'session-log', label: 'Session log', icon: ClipboardList, href: '#session-log' },
-  { id: 'patients', label: 'Patients', icon: Users },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
 
@@ -168,18 +167,6 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
                     <Icon size={16} />
                     {label}
                   </div>
-                );
-              }
-              if (id === 'patients' && onExit) {
-                return (
-                  <button
-                    key={id}
-                    onClick={onExit}
-                    className="w-full font-display flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-[#B7B1A0] hover:bg-white/5 hover:text-[#E9E4D6] transition-colors text-left"
-                  >
-                    <Icon size={16} />
-                    {label}
-                  </button>
                 );
               }
               if (href) {

@@ -465,6 +465,7 @@ export default function GameCanvas({ pose, userId, onSessionSaved }) {
           accuracy: final.accuracy,
           max_streak: final.maxStreak,
           level: final.level,
+          form_faults: final.formFaults || {},
         }),
       });
       if (!res.ok) throw new Error(`Server responded ${res.status}`);

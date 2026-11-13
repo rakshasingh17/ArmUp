@@ -93,7 +93,7 @@ function describeStartError(err, stage) {
   }
 }
 
-const EMPTY_STATS = { score: 0, reps: 0, streak: 0, maxStreak: 0, level: 1, accuracy: 0 };
+const EMPTY_STATS = { score: 0, reps: 0, streak: 0, maxStreak: 0, level: 1, accuracy: 0, formFaults: {}, faultCount: 0 };
 
 export function usePoseSession({ initialExercise = 'curl' } = {}) {
   const videoRef = useRef(null);        // hidden <video> -- drawImage() source only, NEVER passed to MediaPipe
@@ -368,11 +368,14 @@ export function usePoseSession({ initialExercise = 'curl' } = {}) {
           const nextStats = {
             score: session.score, reps: session.reps, streak: session.streak,
             maxStreak: session.maxStreak, level: session.level, accuracy: session.accuracy(),
+            // Form faults flagged so far this set, e.g. { elbow_drift: 2 }.
+            formFaults: { ...session.formFaults },
+            faultCount: Object.values(session.formFaults).reduce((a, n) => a + n, 0),
           };
           const prev = statsRef.current;
           if (prev.score !== nextStats.score || prev.reps !== nextStats.reps ||
               prev.streak !== nextStats.streak || prev.level !== nextStats.level ||
-              prev.accuracy !== nextStats.accuracy) {
+              prev.accuracy !== nextStats.accuracy || prev.faultCount !== nextStats.faultCount) {
             statsRef.current = nextStats;
             setStats(nextStats);
           }

@@ -44,6 +44,8 @@ const CONDITION_LABELS = {
 // Handed out for the demo. Change these before real use.
 const DEMO_INVITE_CODES = ['ARMUP-THERAPIST-1', 'ARMUP-THERAPIST-2', 'ARMUP-THERAPIST-3'];
 const ROLES = ['patient', 'therapist'];
+// Form faults the rep engine can flag (see FORM_RULES in src/engine.js).
+const FORM_FAULT_IDS = ['elbow_drift', 'too_high', 'lean_back'];
 const PLAN_MIN_REPS = 3;
 const PLAN_MAX_REPS = 30;
 const NOTE_MAX_LEN = 1000;
@@ -93,7 +95,8 @@ function initSchema() {
       score INTEGER DEFAULT 0,
       accuracy FLOAT DEFAULT 0.0,
       max_streak INTEGER DEFAULT 0,
-      level INTEGER DEFAULT 1
+      level INTEGER DEFAULT 1,
+      form_faults TEXT
     );
     CREATE TABLE IF NOT EXISTS ailment_exercise_map (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -138,6 +141,11 @@ function initSchema() {
     db.exec('ALTER TABLE users ADD COLUMN password_hash VARCHAR');
   }
   // Databases from before roles existed: everyone already in there is a patient.
+  // Sessions saved before form tracking have no form data (NULL = "not recorded").
+  const sessionCols = db.prepare('PRAGMA table_info(session_logs)').all().map((c) => c.name);
+  if (!sessionCols.includes('form_faults')) {
+    db.exec('ALTER TABLE session_logs ADD COLUMN form_faults TEXT');
+  }
   if (!cols.includes('role')) {
     db.exec("ALTER TABLE users ADD COLUMN role VARCHAR NOT NULL DEFAULT 'patient'");
   }
@@ -435,14 +443,29 @@ function deleteNote(noteId, therapistId) {
     .run(noteId, therapistId).changes > 0;
 }
 
-function logSession(userId, exerciseKey, reps, score, accuracy, maxStreak, level) {
+// Keeps only the form faults we know about, as whole counts from 0 to 1000.
+// Returns null when nothing was sent (an older client), so "not recorded" stays
+// different from "recorded, no faults" ({}).
+function cleanFormFaults(raw) {
+  if (raw === undefined || raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const out = {};
+  for (const id of FORM_FAULT_IDS) {
+    const n = Number(raw[id]);
+    if (Number.isInteger(n) && n > 0) out[id] = Math.min(n, 1000);
+  }
+  return out;
+}
+
+function logSession(userId, exerciseKey, reps, score, accuracy, maxStreak, level, formFaults) {
+  const faults = cleanFormFaults(formFaults);
   const info = db
     .prepare(
       `INSERT INTO session_logs
-         (user_id, exercise_key, timestamp, reps, score, accuracy, max_streak, level)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+         (user_id, exercise_key, timestamp, reps, score, accuracy, max_streak, level, form_faults)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(userId, exerciseKey, nowUtcForDb(), reps, score, accuracy, maxStreak, level);
+    .run(userId, exerciseKey, nowUtcForDb(), reps, score, accuracy, maxStreak, level,
+      faults === null ? null : JSON.stringify(faults));
   return db.prepare('SELECT * FROM session_logs WHERE id = ?').get(Number(info.lastInsertRowid));
 }
 
@@ -462,7 +485,18 @@ function publicSession(s) {
     accuracy: s.accuracy,
     max_streak: s.max_streak,
     level: s.level,
+    form_faults: parseFormFaults(s.form_faults),
   };
+}
+
+// null = not recorded (older session); {} = recorded, no faults.
+function parseFormFaults(text) {
+  if (text === null || text === undefined) return null;
+  try {
+    return cleanFormFaults(JSON.parse(text));
+  } catch {
+    return null;
+  }
 }
 
 module.exports = {

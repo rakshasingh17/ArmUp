@@ -241,6 +241,29 @@ test('plan: therapist-only editing, validated, replaces the default, can be rese
   assert.ok(after.every((e) => !e.custom));
 });
 
+test('form faults: saved with a session, cleaned, visible to the therapist', () => {
+  const a = pat('form-a');
+  const dr = therapistToken('dr1');
+  const base = { user_id: a.id, exercise_key: 'curl', reps: 10, score: 90, accuracy: 70, max_streak: 3, level: 1 };
+
+  assert.equal(call('POST', '/sessions', { ...base, form_faults: { elbow_drift: 3, too_high: 0 } }, a.token).status, 200);
+  assert.equal(call('POST', '/sessions', { ...base, form_faults: {} }, a.token).status, 200);
+  // junk is dropped, not stored: unknown ids, negatives, fractions, strings, huge numbers
+  const junk = call('POST', '/sessions', { ...base, form_faults: { elbow_drift: 2, evil: 5, lean_back: -1, too_high: 1.5, x: 'y' } }, a.token);
+  assert.equal(junk.status, 200);
+  assert.deepEqual(junk.body.form_faults, { elbow_drift: 2 });
+  assert.deepEqual(call('POST', '/sessions', { ...base, form_faults: { elbow_drift: 99999 } }, a.token).body.form_faults, { elbow_drift: 1000 });
+  // an older client that sends nothing -> "not recorded", which is not the same as "no faults"
+  assert.equal(call('POST', '/sessions', base, a.token).body.form_faults, null);
+  assert.equal(call('POST', '/sessions', { ...base, form_faults: 'oops' }, a.token).body.form_faults, null);
+  assert.equal(call('POST', '/sessions', { ...base, form_faults: [1, 2] }, a.token).body.form_faults, null);
+
+  const seen = call('GET', `/users/${a.id}/sessions`, undefined, dr).body;
+  assert.deepEqual(seen[0].form_faults, { elbow_drift: 3 });
+  assert.deepEqual(seen[1].form_faults, {});
+  assert.equal(seen[4].form_faults, null);
+});
+
 test('a database from before roles gets the role column, everyone a patient', () => {
   const Database = require('better-sqlite3');
   const old = path.join(tmp, 'old.db');

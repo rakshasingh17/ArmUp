@@ -217,7 +217,7 @@ route('POST', /^\/sessions$/, (_p, body, who) => {
   }
   const entry = db.logSession(
     Number(b.user_id), b.exercise_key, Math.round(b.reps), Math.round(b.score),
-    Number(b.accuracy), Math.round(b.max_streak), Math.round(b.level)
+    Number(b.accuracy), Math.round(b.max_streak), Math.round(b.level), b.form_faults
   );
   return ok(db.publicSession(entry));
 });
