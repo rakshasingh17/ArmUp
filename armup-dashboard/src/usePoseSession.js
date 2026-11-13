@@ -38,10 +38,14 @@
  * that just gets drawn two different ways.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { PoseLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 import { SessionState, EXERCISES, FORM_RULES, angleAt, MIN_VISIBILITY } from './engine';
 
-const MP_CDN = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
-const MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
+// Both the WASM runtime and the model ship inside the app (public/mediapipe/),
+// so tracking works with no internet. BASE_URL is './' so this resolves
+// correctly both under Vite and inside the packaged Electron window.
+const MP_WASM_URL = `${import.meta.env.BASE_URL}mediapipe/wasm`;
+const MODEL_URL = `${import.meta.env.BASE_URL}mediapipe/pose_landmarker_lite.task`;
 
 // Same landmark index map as backend/armup_app.py's LM dict --
 // PoseLandmarker's index scheme is identical between Python and JS.
@@ -74,7 +78,7 @@ function smooth(store, name, raw) {
 // Turns the browser's cryptic camera errors into something actionable.
 function describeStartError(err, stage) {
   if (stage === 'model') {
-    return "Camera opened, but the pose model couldn't load. Check your internet connection (it downloads from jsdelivr / Google storage) and try again.";
+    return "Camera opened, but the pose model couldn't load. The bundled model files may be missing or damaged. Restart the app, and reinstall it if this keeps happening.";
   }
   switch (err?.name) {
     case 'NotAllowedError':
@@ -192,9 +196,7 @@ export function usePoseSession({ initialExercise = 'curl' } = {}) {
 
       stage = 'model';
       setStatus('Loading pose model (first load can take a few seconds)...');
-      const visionModule = await import(/* @vite-ignore */ MP_CDN);
-      const { PoseLandmarker, FilesetResolver } = visionModule;
-      const filesetResolver = await FilesetResolver.forVisionTasks(`${MP_CDN}/wasm`);
+      const filesetResolver = await FilesetResolver.forVisionTasks(MP_WASM_URL);
 
       let landmarker;
       try {

@@ -142,7 +142,6 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
           system sans), Inter for body/data where plain legibility
           matters more than personality. */}
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700&family=Inter:wght@400;500;600&display=swap');
         .font-display { font-family: 'Outfit', ui-sans-serif, sans-serif; }
       `}</style>
 
