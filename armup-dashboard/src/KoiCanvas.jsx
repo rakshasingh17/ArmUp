@@ -181,7 +181,7 @@ export default function KoiCanvas({ pose, userId, onSessionSaved }) {
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/50 px-8 text-center">
             {cameraError && <p className="max-w-md text-sm text-[#ffb4b4]">{cameraError}</p>}
             <p className="font-display text-xl text-white">Koi chase</p>
-            <p className="max-w-sm text-sm text-white/80">A calm game: guide the koi with your hand and make the lotus flowers bloom.</p>
+            <p className="max-w-sm text-sm text-white/80">A calm game: guide the koi with your hand and make the lotus flowers bloom. Reaching for the flowers is gentle arm and shoulder movement practice.</p>
             <button onClick={startCamera} disabled={starting} className={btnPrimary}>
               {starting ? 'Starting…' : 'Start camera'}
             </button>
@@ -197,6 +197,12 @@ export default function KoiCanvas({ pose, userId, onSessionSaved }) {
               </p>
               <p className="text-xs text-white/60">
                 Active mode adds a rival fish that may snatch a flower. It never takes your points.
+              </p>
+              <p className="text-xs text-white/70 border-t border-white/15 pt-2 mt-1">
+                <span className="font-semibold text-white/90">Why this game?</span> Reaching toward each flower
+                gently moves your arm and shoulder through a comfortable range, like the movements in your exercises,
+                and it&apos;s easier to keep going when it feels like play. Reach as far as is comfortable and go at
+                your own pace. Stop if anything hurts.
               </p>
               <button onClick={start} className={`${btnPrimary} mt-1`}>Start</button>
             </div>
