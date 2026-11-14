@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Dumbbell, ArrowLeft, Loader2, ChevronDown, Check, X } from 'lucide-react';
+import { ArrowLeft, Loader2, ChevronDown, Check, X } from 'lucide-react';
+import BrandMark from './BrandMark.jsx';
 import { apiFetch } from './api';
 
 const MIN_PASSWORD_LEN = 6; // keep in sync with MIN_PASSWORD_LEN in armup_api.py
@@ -108,9 +109,7 @@ export default function SignupPage({ onCreated, onBack, onLogin }) {
 
       <main className="w-full max-w-md px-6 pt-8 pb-16">
         <div className="flex items-center gap-2 mb-8">
-          <div className="bg-[#E8E2A8] text-[#17140F] p-1.5 rounded-lg">
-            <Dumbbell size={18} />
-          </div>
+          <BrandMark size={32} />
           <span className="font-display text-lg font-semibold tracking-tight">ArmUp</span>
         </div>
 

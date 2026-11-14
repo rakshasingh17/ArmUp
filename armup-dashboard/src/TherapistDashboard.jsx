@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { Dumbbell, Users, LogOut, ArrowLeft, Loader2, Activity, Target, Flame, ClipboardList, ShieldAlert, Play } from 'lucide-react';
+import { Users, LogOut, ArrowLeft, Loader2, Activity, Target, Flame, ClipboardList, ShieldAlert, Play } from 'lucide-react';
+import BrandMark from './BrandMark.jsx';
 import { apiFetch } from './api';
 import InviteCodeButton from './InviteCodeButton';
 import NotesCard from './NotesCard';
@@ -97,9 +98,7 @@ export default function TherapistDashboard({ userId, onExit }) {
       <aside className="bg-[#17140F] text-[#E9E4D6] lg:w-72 lg:min-h-screen lg:m-3 lg:rounded-[2rem] p-6 flex flex-col justify-between">
         <div>
           <div className="flex items-center gap-3 mb-10">
-            <div className="bg-[#E8E2A8] text-[#17140F] p-2 rounded-xl">
-              <Dumbbell size={20} />
-            </div>
+            <BrandMark size={40} />
             <span className="font-display text-xl font-semibold tracking-tight">ArmUp</span>
           </div>
           <p className="text-[11px] uppercase tracking-wide text-[#8D8777] mb-3 px-1">Therapist</p>

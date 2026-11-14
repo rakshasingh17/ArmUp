@@ -1,5 +1,6 @@
 import React from 'react';
-import { Dumbbell, Activity, TrendingUp, Flame, ArrowRight } from 'lucide-react';
+import { Activity, TrendingUp, Flame, ArrowRight } from 'lucide-react';
+import BrandMark from './BrandMark.jsx';
 
 const FEATURES = [
   {
@@ -37,9 +38,7 @@ export default function LandingPage({ onGetStarted, onLogin, onDemo, demoError }
 
       <div className="w-full max-w-5xl px-6 pt-8 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <div className="bg-[#E8E2A8] text-[#17140F] p-1.5 rounded-lg">
-            <Dumbbell size={18} />
-          </div>
+          <BrandMark size={32} />
           <span className="font-display text-lg font-semibold tracking-tight">ArmUp</span>
         </div>
         <button

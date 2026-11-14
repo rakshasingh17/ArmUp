@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Activity, Award, CheckCircle2, Dumbbell, Flame, LayoutDashboard,
+  Activity, Award, CheckCircle2, Flame, LayoutDashboard,
   ClipboardList, Settings, LogOut, Play, ShieldAlert, User
 } from 'lucide-react';
+import BrandMark from './BrandMark.jsx';
 import GameCanvas from './GameCanvas';
 import ExerciseCanvas from './ExerciseCanvas';
 import RecordingConsent from './RecordingConsent';
@@ -149,9 +150,7 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
       <aside className="hidden lg:flex flex-col justify-between w-60 m-4 mr-0 rounded-3xl bg-[#17140F] text-[#E9E4D6] p-5">
         <div>
           <div className="flex items-center gap-2 px-2 mb-8">
-            <div className="bg-[#E8E2A8] text-[#17140F] p-1.5 rounded-lg">
-              <Dumbbell size={18} />
-            </div>
+            <BrandMark size={32} />
             <span className="font-display text-lg font-semibold tracking-tight">ArmUp</span>
           </div>
 
