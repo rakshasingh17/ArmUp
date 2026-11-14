@@ -116,7 +116,7 @@ export default function KoiCanvas({ pose, userId, onSessionSaved }) {
           user_id: userId,
           exercise_key: KOI_KEY,
           reps: final.blooms,          // one bloom = one reach
-          score: final.blooms * 10,
+          score: final.points * 10,    // pink 1, purple 2, gold 3 points per flower
           accuracy: 100,               // no misses in this game
           max_streak: final.maxCombo,
           level: 1,
@@ -148,10 +148,10 @@ export default function KoiCanvas({ pose, userId, onSessionSaved }) {
   const finish = async () => {
     if (savedOnceRef.current) return;
     savedOnceRef.current = true;
-    const { blooms, maxCombo } = gameRef.current.stats();
+    const { blooms, points, maxCombo } = gameRef.current.stats();
     const seconds = Math.round((Date.now() - startedAtRef.current) / 1000);
     const discarded = blooms < MIN_SAVE_BLOOMS;
-    const final = { blooms, maxCombo, seconds, discarded, saved: null };
+    const final = { blooms, points, maxCombo, seconds, discarded, saved: null };
     setResult(final);
     setPhase('complete');
     if (!discarded) {
@@ -193,7 +193,10 @@ export default function KoiCanvas({ pose, userId, onSessionSaved }) {
             <div className="w-full max-w-md bg-[#0a3f52]/95 border border-white/20 rounded-2xl px-5 py-4 text-center text-white flex flex-col items-center gap-1.5">
               <p className="font-display text-lg font-semibold">Koi chase</p>
               <p className="text-xs text-white/80">
-                Sit comfortably with your arms and shoulders in view. Move your hand to swim the koi to each glowing bud. There is no timer; finish whenever you like.
+                Sit comfortably with your arms and shoulders in view. Move your hand to swim the koi to the glowing buds. Pink flowers are worth 1 point, purple 2 and gold 3. There is no timer; finish whenever you like.
+              </p>
+              <p className="text-xs text-white/60">
+                Active mode adds a rival fish that may snatch a flower. It never takes your points.
               </p>
               <button onClick={start} className={`${btnPrimary} mt-1`}>Start</button>
             </div>
@@ -215,7 +218,7 @@ export default function KoiCanvas({ pose, userId, onSessionSaved }) {
                 {result.discarded ? 'Session ended' : 'Beautiful pond!'}
               </h3>
               <p className="text-sm text-white/70 mb-3">
-                {result.blooms} lotus {result.blooms === 1 ? 'flower' : 'flowers'} bloomed
+                {result.blooms} lotus {result.blooms === 1 ? 'flower' : 'flowers'} bloomed for {result.points} {result.points === 1 ? 'point' : 'points'}
                 {mins >= 1 ? ` in about ${mins} min` : ''}.
               </p>
               <p className="text-sm text-white/80">
