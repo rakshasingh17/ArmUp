@@ -1,3 +1,12 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* "Darker text" display setting: the dashboard uses a few light greys for
+   captions and labels. Darken just those; backgrounds are untouched. */
+.armup-high-contrast [class*="text-[#8D8777]"],
+.armup-high-contrast [class*="text-[#6B6434]"],
+.armup-high-contrast [class*="text-[#8A4E68]"],
+.armup-high-contrast [class*="text-[#6B5B45]"] {
+  color: #221E18 !important;
+}
