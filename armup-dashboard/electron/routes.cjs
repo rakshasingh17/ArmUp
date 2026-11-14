@@ -257,7 +257,7 @@ route('POST', /^\/sessions$/, (_p, body, who) => {
   // Sessions are saved only to the signed-in user's own record.
   if (Number(b.user_id) !== who.sub) return fail(403, 'Not allowed.');
   if (!db.getUser(Number(b.user_id))) return fail(404, 'User not found');
-  if (!db.listExercises().some((e) => e.key === b.exercise_key)) {
+  if (!db.listSessionKeys().includes(b.exercise_key)) {
     return fail(400, `Unknown exercise_key: ${b.exercise_key}`);
   }
   const entry = db.logSession(

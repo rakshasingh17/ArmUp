@@ -17,6 +17,7 @@ const EXERCISE_NAMES = {
   raise: 'Lateral Raise',
   press: 'Shoulder Press',
   neck_tilt: 'Owl Neck Tilt',
+  koi: 'Koi Chase',
 };
 const exerciseName = (key) => EXERCISE_NAMES[key] || key;
 

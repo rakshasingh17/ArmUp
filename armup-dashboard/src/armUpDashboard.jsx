@@ -6,6 +6,7 @@ import {
 import BrandMark from './BrandMark.jsx';
 import GameCanvas from './GameCanvas';
 import ExerciseCanvas from './ExerciseCanvas';
+import KoiCanvas from './KoiCanvas';
 import RecordingConsent from './RecordingConsent';
 import { usePoseSession } from './usePoseSession';
 import { apiFetch } from './api';
@@ -19,6 +20,7 @@ const EXERCISE_STYLE = {
   raise:      { bg: '#CFE1EC', ink: '#3E7396', name: 'Lateral Raise' },
   press:      { bg: '#DAD3EF', ink: '#6C5C9A', name: 'Shoulder Press' },
   neck_tilt:  { bg: '#E8E2A8', ink: '#8C8330', name: 'Owl Neck Tilt' },
+  koi:        { bg: '#F6DCE8', ink: '#C0577F', name: 'Koi Chase' },
 };
 const FALLBACK_STYLE = { bg: '#E7E2D4', ink: '#8D8777', name: 'Exercise' };
 
@@ -56,7 +58,7 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
   const [sessions, setSessions] = useState([]);
   const [notes, setNotes] = useState([]); // from the patient's therapist(s), newest first
   const [loading, setLoading] = useState(true);
-  const [mode, setMode] = useState('exercise'); // 'exercise' | 'game'
+  const [mode, setMode] = useState('exercise'); // 'exercise' | 'game' | 'koi'
 
   // One shared camera + MediaPipe + rep-engine session for BOTH modes --
   // see usePoseSession.js for why this can't live inside each canvas.
@@ -255,6 +257,14 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
           >
             Game mode
           </button>
+          <button
+            onClick={() => setMode('koi')}
+            className={`font-display text-sm px-4 py-2 rounded-full transition-colors ${
+              mode === 'koi' ? 'bg-[#17140F] text-[#E9E4D6]' : 'bg-white border border-[#E7E2D4] text-[#8D8777]'
+            }`}
+          >
+            Calm mode
+          </button>
         </div>
 
         {/* Both modes share one camera + tracking session (the `pose`
@@ -266,6 +276,8 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
         <div id="exercise-stage" className="mb-8 scroll-mt-6">
           {mode === 'exercise' ? (
             <ExerciseCanvas pose={pose} userId={userId} plan={recommended} recordingConsent={!!user?.share_recordings} onSessionSaved={() => fetchDashboardData(userId)} />
+          ) : mode === 'koi' ? (
+            <KoiCanvas pose={pose} userId={userId} onSessionSaved={() => fetchDashboardData(userId)} />
           ) : (
             <GameCanvas pose={pose} userId={userId} onSessionSaved={() => fetchDashboardData(userId)} />
           )}

@@ -397,3 +397,17 @@ test('patient list: therapists only, with a progress summary', () => {
   assert.ok(!list.body.some((p) => p.id === th.body.id), 'therapists are not listed as patients');
   assert.ok(list.body.every((p) => !('password_hash' in p) && !('token' in p)));
 });
+
+test('koi chase: sessions can be saved, but it is not a prescribable exercise', () => {
+  const a = pat('koi-a');
+  const dr = call('POST', '/users', { name: 'dr-koi', password: 'secret12', role: 'therapist', invite_code: 'ARMUP-THERAPIST-2' }).body.token;
+  const s = { exercise_key: 'koi', reps: 8, score: 80, accuracy: 100, max_streak: 2, level: 1, form_faults: {} };
+  assert.equal(call('POST', '/sessions', { ...s, user_id: a.id }, a.token).status, 200);
+  assert.equal(db.getHistory(a.id)[0].exercise_key, 'koi');
+  assert.equal(call('POST', '/sessions', { ...s, exercise_key: 'nope', user_id: a.id }, a.token).status, 400);
+  // Not offered in the therapist's plan editor, and cannot be put in a plan.
+  const plan = call('GET', `/patients/${a.id}/plan`, undefined, dr).body;
+  assert.ok(!plan.exercises.some((e) => e.key === 'koi'));
+  assert.equal(call('PUT', `/patients/${a.id}/plan`, { exercises: [{ key: 'koi', reps_per_set: 8 }] }, dr).status, 400);
+  assert.ok(!call('GET', '/exercises', undefined, a.token).body.some((e) => e.key === 'koi'));
+});

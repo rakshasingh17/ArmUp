@@ -21,6 +21,11 @@ const SEED_EXERCISES = [
   ['neck_tilt', 'Owl Neck Tilt'],
 ];
 
+// Games record sessions like exercises do, but are not rep-counted exercises:
+// they never appear in the therapist's plan editor (see listExercises).
+const GAME_KEYS = ['koi'];
+const SEED_GAMES = [['koi', 'Koi Chase']];
+
 // (ailment_tag, exercise_key, starting_tolerance, priority)
 const SEED_AILMENT_MAP = [
   ['frozen_shoulder', 'raise', 20.0, 1],
@@ -165,6 +170,9 @@ function seedAll() {
     const ins = db.prepare('INSERT INTO exercises (key, name) VALUES (?, ?)');
     db.transaction(() => SEED_EXERCISES.forEach((e) => ins.run(...e)))();
   }
+  // Runs on every start so existing databases pick up newly added games.
+  const insGame = db.prepare('INSERT OR IGNORE INTO exercises (key, name) VALUES (?, ?)');
+  db.transaction(() => SEED_GAMES.forEach((e) => insGame.run(...e)))();
   if (!db.prepare('SELECT 1 FROM ailment_exercise_map LIMIT 1').get()) {
     const ins = db.prepare(
       'INSERT INTO ailment_exercise_map (ailment_tag, exercise_key, starting_tolerance, priority) VALUES (?, ?, ?, ?)'
@@ -352,8 +360,14 @@ function listPatientSummaries() {
     }));
 }
 
+// Exercises a therapist can prescribe (games excluded).
 function listExercises() {
-  return db.prepare('SELECT key, name FROM exercises').all();
+  return db.prepare('SELECT key, name FROM exercises').all().filter((e) => !GAME_KEYS.includes(e.key));
+}
+
+// Everything a session can be recorded against: exercises plus games.
+function listSessionKeys() {
+  return db.prepare('SELECT key FROM exercises').all().map((e) => e.key);
 }
 
 function listConditions() {
@@ -537,7 +551,7 @@ function parseFormFaults(text) {
 }
 
 module.exports = {
-  openDb, createUser, getUser, getUserByName, authenticate, listExercises,
+  openDb, createUser, getUser, getUserByName, authenticate, listExercises, listSessionKeys,
   listConditions, getRecommendedExercises, logSession, getHistory,
   publicUser, publicSession, hashPassword, verifyPassword,
   createInviteCode, createTherapistWithInvite, ROLES, listPatientSummaries,
