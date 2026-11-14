@@ -13,13 +13,38 @@ const { handleRequest } = require('./routes.cjs');
 
 const isDev = !app.isPackaged;
 
-function createWindow() {
+const ICON_PATH = path.join(__dirname, 'assets', 'icon.png');
+const SPLASH_MIN_MS = 1600;   // keep the splash up long enough to be seen
+const SPLASH_MAX_MS = 15000;  // never let it hang around if something goes wrong
+
+function createSplash() {
+  const splash = new BrowserWindow({
+    width: 520,
+    height: 340,
+    frame: false,
+    resizable: false,
+    movable: true,
+    center: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    show: false,
+    backgroundColor: '#f5f1e8',
+    icon: ICON_PATH,
+    webPreferences: { contextIsolation: true, nodeIntegration: false },
+  });
+  splash.once('ready-to-show', () => splash.show());
+  return splash;
+}
+
+function createWindow(splash, splashShownAt) {
   const win = new BrowserWindow({
     width: 1280,
     height: 860,
     minWidth: 960,
     minHeight: 640,
     title: 'ArmUp',
+    icon: ICON_PATH,
+    show: false, // revealed once loaded, after the splash has had its moment
     backgroundColor: '#f5f1e8',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -29,6 +54,32 @@ function createWindow() {
   });
   win.setMenuBarVisibility(false);
 
+  let revealed = false;
+  const reveal = () => {
+    if (revealed) return;
+    revealed = true;
+    if (splash && !splash.isDestroyed()) splash.close();
+    if (win.isDestroyed()) return;
+    win.setOpacity(0);
+    win.show();
+    // quick fade-in (setOpacity is a no-op on platforms that don't support it)
+    let o = 0;
+    const timer = setInterval(() => {
+      o = Math.min(1, o + 0.1);
+      if (win.isDestroyed()) return clearInterval(timer);
+      win.setOpacity(o);
+      if (o >= 1) clearInterval(timer);
+    }, 20);
+  };
+
+  win.once('ready-to-show', () => {
+    const wait = Math.max(0, SPLASH_MIN_MS - (Date.now() - splashShownAt));
+    setTimeout(reveal, wait);
+  });
+  // Safety nets: if loading fails or stalls, still show the window (and its error).
+  win.webContents.once('did-fail-load', reveal);
+  setTimeout(reveal, SPLASH_MAX_MS);
+
   if (process.env.ARMUP_DEV_URL) {
     win.loadURL(process.env.ARMUP_DEV_URL);
   } else {
@@ -36,7 +87,12 @@ function createWindow() {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Show the splash first and let it paint before the (synchronous) startup work.
+  const splash = createSplash();
+  await splash.loadFile(path.join(__dirname, 'splash.html'));
+  const splashShownAt = Date.now();
+
   // Database lives in the per-user data folder, so it survives app updates.
   const dbPath = path.join(app.getPath('userData'), 'armup.db');
   db.openDb(dbPath, {
@@ -62,9 +118,9 @@ app.whenReady().then(() => {
     callback(permission === 'media')
   );
 
-  createWindow();
+  createWindow(splash, splashShownAt);
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (BrowserWindow.getAllWindows().length === 0) createWindow(null, 0);
   });
 });
 

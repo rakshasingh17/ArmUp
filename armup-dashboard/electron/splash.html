@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'unsafe-inline'" />
+<title>ArmUp</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: #f5f1e8; box-sizing: border-box; border: 1px solid #e3dccb;
+    font-family: Inter, 'Segoe UI', system-ui, sans-serif; color: #6f6aa8;
+    -webkit-app-region: drag; user-select: none;
+  }
+  img { width: 340px; max-width: 80%; animation: rise 700ms ease-out both; }
+  .bar {
+    margin-top: 34px; width: 220px; height: 5px; border-radius: 5px;
+    background: #e6dfcf; overflow: hidden; position: relative;
+    animation: rise 700ms 150ms ease-out both;
+  }
+  .bar::before {
+    content: ''; position: absolute; top: 0; bottom: 0; width: 40%; border-radius: 5px;
+    background: linear-gradient(90deg, #2d2b6b, #f478a0);
+    animation: slide 1.3s ease-in-out infinite;
+  }
+  p { margin: 14px 0 0; font-size: 12.5px; letter-spacing: .04em; animation: rise 700ms 250ms ease-out both; }
+  @keyframes slide { 0% { left: -40%; } 100% { left: 100%; } }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+  <img src="assets/logo-horizontal.png" alt="ArmUp" />
+  <div class="bar"></div>
+  <p>Getting your session ready…</p>
+</body>
+</html>
