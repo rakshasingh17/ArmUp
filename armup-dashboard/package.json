@@ -46,6 +46,7 @@
   "build": {
     "appId": "edu.umit.armup",
     "productName": "ArmUp",
+     "npmRebuild": false,
     "files": [
       "dist/**/*",
       "electron/**/*",
