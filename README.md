@@ -56,6 +56,3 @@ We hope ArmUp makes rehabilitation a little more engaging, and a little easier t
 
 ## A note
 This is a student project, so please stick to using fake data. It is not a medical product and shouldn't be used to replace real physiotherapy advice.
-
-## A note
-This is a student project, so please use fake data only. It is not a medical product and shouldn't be used to replace real physiotherapy advice.
