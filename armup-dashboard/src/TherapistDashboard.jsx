@@ -198,9 +198,11 @@ function PatientList({ me, patients, error, onOpen }) {
 function PatientDetail({ selected, summary, therapistId, onBack }) {
   const { sessions } = selected;
   const totalReps = sessions.reduce((a, s) => a + s.reps, 0);
-  const avgAccuracy = sessions.length
-    ? Math.round(sessions.reduce((a, s) => a + s.accuracy, 0) / sessions.length)
-    : 0;
+  // Koi chase has no misses (saved as 100%), so it doesn't count toward form accuracy.
+  const scored = sessions.filter((s) => s.exercise_key !== 'koi');
+  const avgAccuracy = scored.length
+    ? Math.round(scored.reduce((a, s) => a + s.accuracy, 0) / scored.length)
+    : null;
   const bestStreak = sessions.length ? Math.max(...sessions.map((s) => s.max_streak)) : 0;
   const recent = [...sessions].reverse().slice(0, 15); // newest first
   const [watching, setWatching] = useState(null); // session whose recording is open
@@ -217,7 +219,7 @@ function PatientDetail({ selected, summary, therapistId, onBack }) {
   const stats = [
     { label: 'Sessions', value: sessions.length, icon: ClipboardList },
     { label: 'Total reps', value: totalReps, icon: Activity },
-    { label: 'Avg accuracy', value: `${avgAccuracy}%`, icon: Target },
+    { label: 'Avg accuracy', value: avgAccuracy === null ? '—' : `${avgAccuracy}%`, icon: Target },
     { label: 'Best streak', value: bestStreak, icon: Flame },
     {
       label: 'Sessions with form flags',
@@ -297,7 +299,7 @@ function PatientDetail({ selected, summary, therapistId, onBack }) {
                       <td className="px-6 py-3 text-[#6B6450]">{formatWhen(s.timestamp)}</td>
                       <td className="px-3 py-3">{exerciseName(s.exercise_key)}</td>
                       <td className="px-3 py-3">{s.reps}</td>
-                      <td className="px-3 py-3">{Math.round(s.accuracy)}%</td>
+                      <td className="px-3 py-3">{s.exercise_key === 'koi' ? '—' : `${Math.round(s.accuracy)}%`}</td>
                       <td className="px-3 py-3"><FormCell session={s} /></td>
                       <td className="px-3 py-3">{s.score}</td>
                       <td className="px-6 py-3">

@@ -341,7 +341,8 @@ function listPatientSummaries() {
       `SELECT u.id, u.name, u.ailment_tags,
               COUNT(s.id) AS session_count,
               COALESCE(SUM(s.reps), 0) AS total_reps,
-              AVG(s.accuracy) AS avg_accuracy,
+              -- Koi chase has no misses, so it is saved as 100% accuracy; leave it out of the average
+              AVG(CASE WHEN s.exercise_key = 'koi' THEN NULL ELSE s.accuracy END) AS avg_accuracy,
               MAX(s.timestamp) AS last_session
        FROM users u LEFT JOIN session_logs s ON s.user_id = u.id
        WHERE u.role = 'patient'

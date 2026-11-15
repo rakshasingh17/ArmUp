@@ -393,6 +393,12 @@ test('patient list: therapists only, with a progress summary', () => {
   assert.equal(row.session_count, 2);
   assert.equal(row.total_reps, 15);
   assert.equal(row.avg_accuracy, 85);
+
+  // Koi chase is saved at 100% (no misses), so it must not lift the average.
+  call('POST', '/sessions', { exercise_key: 'koi', reps: 12, score: 120, accuracy: 100, max_streak: 3, level: 1, form_faults: {}, user_id: a.id }, a.token);
+  const row2 = call('GET', '/patients', undefined, th.body.token).body.find((p) => p.id === a.id);
+  assert.equal(row2.session_count, 3);
+  assert.equal(row2.avg_accuracy, 85);
   assert.ok(row.last_session);
   assert.ok(!list.body.some((p) => p.id === th.body.id), 'therapists are not listed as patients');
   assert.ok(list.body.every((p) => !('password_hash' in p) && !('token' in p)));

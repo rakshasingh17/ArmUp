@@ -128,9 +128,12 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
 
   const totalReps = sessions.reduce((acc, s) => acc + s.reps, 0);
   const totalScore = sessions.reduce((acc, s) => acc + s.score, 0);
-  const avgAccuracy = sessions.length
-    ? Math.round(sessions.reduce((acc, s) => acc + s.accuracy, 0) / sessions.length)
-    : 0;
+  // Koi chase has no misses (saved as 100%), so it doesn't count toward form accuracy.
+  const scoredSessions = sessions.filter(s => s.exercise_key !== 'koi');
+  const recentScored = recent.filter(s => s.exercise_key !== 'koi');
+  const avgAccuracy = scoredSessions.length
+    ? Math.round(scoredSessions.reduce((acc, s) => acc + s.accuracy, 0) / scoredSessions.length)
+    : null;
   const maxStreak = sessions.length ? Math.max(...sessions.map(s => s.max_streak)) : 0;
 
   const byExercise = sessions.reduce((acc, s) => {
@@ -256,7 +259,7 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
             </h1>
             <p className="text-sm text-[#8D8777] mt-1 max-w-md">
               {sessions.length > 0
-                ? `${totalReps} reps logged across ${sessions.length} session${sessions.length === 1 ? '' : 's'}, averaging ${avgAccuracy}% form accuracy.`
+                ? `${totalReps} reps logged across ${sessions.length} session${sessions.length === 1 ? '' : 's'}${avgAccuracy === null ? '.' : `, averaging ${avgAccuracy}% form accuracy.`}`
                 : 'No sessions logged yet for this patient.'}
             </p>
           </div>
@@ -344,13 +347,13 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
           {/* Accuracy sparkline */}
           <StatCard bg="#F3D9E2" label="Form accuracy" caption="Trend over time">
             <div className="h-16 mt-3">
-              {recent.length > 1 ? (
-                <Sparkline values={recent.map(s => s.accuracy)} stroke="#B15C7E" />
+              {recentScored.length > 1 ? (
+                <Sparkline values={recentScored.map(s => s.accuracy)} stroke="#B15C7E" />
               ) : (
                 <p className="text-xs text-[#8A4E68] mt-6">Not enough data yet</p>
               )}
             </div>
-            <p className="font-display text-2xl font-semibold mt-3">{avgAccuracy}%</p>
+            <p className="font-display text-2xl font-semibold mt-3">{avgAccuracy === null ? '—' : `${avgAccuracy}%`}</p>
             <p className="text-xs text-[#8A4E68]">average accuracy</p>
           </StatCard>
 
@@ -439,7 +442,7 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
                           <td className="py-3 font-semibold">{s.reps}</td>
                           <td className="py-3">
                             <span className={`text-xs font-mono font-medium ${s.accuracy >= 80 ? 'text-[#5B8A5A]' : 'text-[#B08A3E]'}`}>
-                              {Math.round(s.accuracy)}%
+                              {s.exercise_key === 'koi' ? '—' : `${Math.round(s.accuracy)}%`}
                             </span>
                           </td>
                           <td className="py-3 text-[#8D8777] font-mono">{s.max_streak}</td>
