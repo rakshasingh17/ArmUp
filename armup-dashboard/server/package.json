@@ -1,0 +1,13 @@
+{
+  "name": "armup-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ArmUp online API: Node.js + PostgreSQL",
+  "main": "index.cjs",
+  "scripts": {
+    "start": "node index.cjs",
+    "test": "node --test --test-concurrency=1"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": { "pg": "^8.13.0" }
+}
