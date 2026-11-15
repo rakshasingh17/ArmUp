@@ -8,6 +8,8 @@ import GameCanvas from './GameCanvas';
 import ExerciseCanvas from './ExerciseCanvas';
 import KoiCanvas from './KoiCanvas';
 import RecordingConsent from './RecordingConsent';
+import SettingsPanel from './SettingsPanel';
+import { loadSettings, saveSettings, applySettings, clearSettings } from './displaySettings';
 import { usePoseSession } from './usePoseSession';
 import { apiFetch } from './api';
 
@@ -46,7 +48,7 @@ function formatIST(ts) {
 const NAV_ITEMS = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, active: true },
   { id: 'session-log', label: 'Session log', icon: ClipboardList, href: '#session-log' },
-  { id: 'settings', label: 'Settings', icon: Settings },
+  { id: 'settings', label: 'Settings', icon: Settings, opensSettings: true },
 ];
 
 // The patient's own dashboard. Therapists use TherapistDashboard instead,
@@ -59,6 +61,20 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
   const [notes, setNotes] = useState([]); // from the patient's therapist(s), newest first
   const [loading, setLoading] = useState(true);
   const [mode, setMode] = useState('exercise'); // 'exercise' | 'game' | 'koi'
+  const [showSettings, setShowSettings] = useState(false);
+  const [display, setDisplay] = useState(() => loadSettings(initialUserId));
+
+  // Apply this patient's text-size / contrast choices while the dashboard
+  // is open, and put the page back to normal when they leave it.
+  useEffect(() => {
+    applySettings(display);
+  }, [display]);
+  useEffect(() => clearSettings, []);
+
+  const changeDisplay = (next) => {
+    setDisplay(next);
+    saveSettings(userId, next);
+  };
 
   // One shared camera + MediaPipe + rep-engine session for BOTH modes --
   // see usePoseSession.js for why this can't live inside each canvas.
@@ -158,7 +174,7 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
 
           <p className="px-2 text-[11px] uppercase tracking-wide text-[#8D8777] mb-2">General</p>
           <nav className="space-y-1">
-            {NAV_ITEMS.map(({ id, label, icon: Icon, active, href }) => {
+            {NAV_ITEMS.map(({ id, label, icon: Icon, active, href, opensSettings }) => {
               if (active) {
                 return (
                   <div
@@ -180,6 +196,18 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
                     <Icon size={16} />
                     {label}
                   </a>
+                );
+              }
+              if (opensSettings) {
+                return (
+                  <button
+                    key={id}
+                    onClick={() => setShowSettings(true)}
+                    className="w-full text-left font-display flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-[#B7B1A0] hover:bg-white/5 hover:text-[#E9E4D6] transition-colors"
+                  >
+                    <Icon size={16} />
+                    {label}
+                  </button>
                 );
               }
               return (
@@ -213,6 +241,10 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
         )}
       </aside>
 
+      {showSettings && (
+        <SettingsPanel settings={display} onChange={changeDisplay} onClose={() => setShowSettings(false)} />
+      )}
+
       {/* Main content */}
       <main className="flex-1 p-4 md:p-8">
 
@@ -228,6 +260,14 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
                 : 'No sessions logged yet for this patient.'}
             </p>
           </div>
+
+          <button
+            onClick={() => setShowSettings(true)}
+            className="lg:hidden font-display flex items-center gap-2 text-sm px-4 py-2 rounded-full bg-white border border-[#E7E2D4] text-[#6B5B45]"
+          >
+            <Settings size={16} />
+            Settings
+          </button>
 
           <div className="flex items-center gap-3 bg-white border border-[#E7E2D4] p-2 rounded-2xl shadow-sm">
             <User className="text-[#8D8777] ml-2" size={18} />
