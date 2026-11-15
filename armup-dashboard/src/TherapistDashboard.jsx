@@ -5,6 +5,7 @@ import { apiFetch } from './api';
 import InviteCodeButton from './InviteCodeButton';
 import NotesCard from './NotesCard';
 import PlanEditor from './PlanEditor';
+import AppointmentsPanel from './AppointmentsPanel';
 import RecordingPlayer from './RecordingPlayer';
 
 // Therapist home. Separate from the patient dashboard: no camera, no
@@ -148,6 +149,10 @@ function PatientList({ me, patients, error, onOpen }) {
             : `${patients.length} patient${patients.length === 1 ? '' : 's'} on ArmUp. Select one to review their progress.`}
         </p>
       </header>
+
+      <div className="max-w-xl mb-6">
+        <AppointmentsPanel role="therapist" />
+      </div>
 
       {error && <p className="text-xs text-[#B15C7E] bg-[#F3D9E2] rounded-xl px-3 py-2 mb-4 inline-block">{error}</p>}
 
@@ -338,6 +343,11 @@ function PatientDetail({ selected, summary, therapistId, onBack }) {
               patientId={selected.id}
               therapistId={therapistId}
               initialNotes={selected.notes}
+            />
+            <AppointmentsPanel
+              key={`appts-${selected.id}`}
+              role="therapist"
+              patient={{ id: selected.id, name: selected.name }}
             />
           </div>
         </>

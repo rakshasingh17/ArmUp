@@ -11,6 +11,7 @@
 const db = require('./db.cjs');
 const auth = require('./auth.cjs');
 const recordings = require('./recordings.cjs');
+const appts = require('./appointments.cjs');
 
 const MIN_PASSWORD_LEN = 6; // keep in sync with SignupPage.jsx
 
@@ -194,6 +195,90 @@ route('DELETE', /^\/notes\/(\d+)$/, ([id], _body, who) => {
   if (!isTherapist(who)) return fail(403, 'Only therapists can do this.');
   // Only the author can delete; anyone else gets the same answer as a missing note.
   return db.deleteNote(Number(id), who.sub) ? ok({ deleted: true }) : fail(404, 'Note not found.');
+});
+
+// ---------------------------------------------------------------
+// Appointments. A therapist books one for a patient (the patient confirms),
+// or a patient requests one with a therapist (the therapist approves).
+// The rules for who may do what are in appointments.cjs.
+// ---------------------------------------------------------------
+// Therapists' names, for the patient's "request an appointment" picker.
+route('GET', /^\/therapists$/, () => ok(db.listTherapists()));
+
+// Your own appointments: a therapist's, or a patient's.
+route('GET', /^\/appointments$/, (_p, _body, who) =>
+  ok(db.listAppointments(who.role, who.sub).map(db.publicAppointment)));
+
+// Checks a start time and length against both people's calendars.
+// Returns an error response, or null when the slot is free.
+function slotProblem(therapistId, patientId, startsAt, minutes, excludeId = 0) {
+  if (db.hasBookedOverlap('therapist_id', therapistId, startsAt, minutes, excludeId)) {
+    return fail(409, 'That time is already taken. Please choose another.');
+  }
+  if (db.hasBookedOverlap('patient_id', patientId, startsAt, minutes, excludeId)) {
+    return fail(409, 'There is already an appointment at that time.');
+  }
+  return null;
+}
+
+route('POST', /^\/appointments$/, (_p, body, who) => {
+  const start = appts.parseStart(body?.starts_at);
+  if (start.error) return fail(400, start.error);
+  const minutes = appts.cleanDuration(body?.duration_min);
+  if (minutes === null) return fail(400, `Length must be one of: ${appts.DURATIONS.join(', ')} minutes.`);
+  const note = appts.cleanNote(body?.note);
+  if (note.error) return fail(400, note.error);
+
+  let patientId, therapistId, status;
+  if (isTherapist(who)) {
+    patientId = Number(body?.patient_id);
+    const denied = therapistOnPatient(who, patientId);
+    if (denied) return denied;
+    therapistId = who.sub;
+    status = 'scheduled'; // waits for the patient to confirm
+  } else {
+    therapistId = Number(body?.therapist_id);
+    if (db.getUser(therapistId)?.role !== 'therapist') return fail(404, 'Therapist not found.');
+    patientId = who.sub;
+    status = 'requested'; // waits for the therapist to approve
+  }
+  const problem = slotProblem(therapistId, patientId, start.date, minutes);
+  if (problem) return problem;
+  const created = db.createAppointment({
+    patientId, therapistId, startsAt: start.date, durationMin: minutes, note: note.note,
+    status, requestedBy: isTherapist(who) ? 'therapist' : 'patient',
+  });
+  return ok(db.publicAppointment(created));
+});
+
+route('POST', /^\/appointments\/(\d+)\/(confirm|cancel|decline|approve|complete|reschedule)$/, ([id, action], body, who) => {
+  const appt = db.getAppointment(Number(id));
+  // Someone else's appointment looks the same as one that doesn't exist.
+  const mine = appt && (isTherapist(who) ? appt.therapist_id === who.sub : appt.patient_id === who.sub);
+  if (!mine) return fail(404, 'Appointment not found.');
+  const next = appts.nextStatus(who.role, appt.status, action);
+  if (!next) return fail(409, "That can't be done to this appointment.");
+
+  const current = db.publicAppointment(appt);
+  let startsAt;
+  if (action === 'reschedule') {
+    const start = appts.parseStart(body?.starts_at);
+    if (start.error) return fail(400, start.error);
+    startsAt = start.date;
+  }
+  if (action === 'approve' || action === 'reschedule') {
+    const problem = slotProblem(appt.therapist_id, appt.patient_id,
+      startsAt || new Date(current.starts_at), appt.duration_min, appt.id);
+    if (problem) return problem;
+  }
+  if (action === 'complete' && new Date(current.starts_at) > new Date()) {
+    return fail(409, "This appointment hasn't started yet.");
+  }
+  const updated = db.updateAppointment(appt.id, {
+    status: next, startsAt,
+    requestedBy: action === 'reschedule' ? who.role : undefined,
+  });
+  return ok(db.publicAppointment(updated));
 });
 
 // The plan editor's starting point: every exercise, with whether it is in the

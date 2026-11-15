@@ -9,6 +9,7 @@ import ExerciseCanvas from './ExerciseCanvas';
 import KoiCanvas from './KoiCanvas';
 import RecordingConsent from './RecordingConsent';
 import SettingsPanel from './SettingsPanel';
+import AppointmentsPanel from './AppointmentsPanel';
 import { loadSettings, saveSettings, applySettings, clearSettings } from './displaySettings';
 import { usePoseSession } from './usePoseSession';
 import { apiFetch } from './api';
@@ -495,6 +496,8 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
               allowed={!!user?.share_recordings}
               onChange={(v) => setUser((u) => (u ? { ...u, share_recordings: v } : u))}
             />
+
+            <AppointmentsPanel role="patient" />
 
             <div className="bg-white border border-[#E7E2D4] rounded-3xl p-5 shadow-sm">
               <p className="text-[11px] uppercase tracking-wide text-[#8D8777] mb-4">From your therapist</p>

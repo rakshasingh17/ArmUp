@@ -10,6 +10,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const Database = require('better-sqlite3');
+const appointmentRules = require('./appointments.cjs');
 
 const PBKDF2_ROUNDS = 200_000;
 
@@ -132,6 +133,20 @@ function initSchema() {
       therapist_id INTEGER NOT NULL REFERENCES users(id),
       body TEXT NOT NULL,
       created_at DATETIME
+    );
+    -- Appointments between a patient and a therapist. starts_at is UTC.
+    -- requested_by says who proposed the current time ('patient' or 'therapist').
+    CREATE TABLE IF NOT EXISTS appointments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      patient_id INTEGER NOT NULL REFERENCES users(id),
+      therapist_id INTEGER NOT NULL REFERENCES users(id),
+      starts_at DATETIME NOT NULL,
+      duration_min INTEGER NOT NULL DEFAULT 30,
+      note TEXT NOT NULL DEFAULT '',
+      status VARCHAR NOT NULL,
+      requested_by VARCHAR NOT NULL,
+      created_at DATETIME,
+      updated_at DATETIME
     );
     -- Single-use therapist invite codes. Only a hash of each code is stored.
     CREATE TABLE IF NOT EXISTS invite_codes (
@@ -494,6 +509,77 @@ function deleteNote(noteId, therapistId) {
     .run(noteId, therapistId).changes > 0;
 }
 
+// ---------------------------------------------------------------
+// Appointments (the rules live in appointments.cjs)
+// ---------------------------------------------------------------
+const APPT_SELECT = `SELECT a.*, p.name AS patient_name, t.name AS therapist_name
+  FROM appointments a
+  JOIN users p ON p.id = a.patient_id
+  JOIN users t ON t.id = a.therapist_id`;
+
+// "2026-11-20T10:00:00.000Z" -> "2026-11-20 10:00:00.000000" (same shape as the other tables)
+const dbTime = (date) => date.toISOString().replace('T', ' ').replace('Z', '') + '000';
+
+function publicAppointment(a) {
+  return {
+    id: a.id,
+    patient_id: a.patient_id,
+    patient_name: a.patient_name,
+    therapist_id: a.therapist_id,
+    therapist_name: a.therapist_name,
+    starts_at: utcIso(a.starts_at),
+    duration_min: a.duration_min,
+    note: a.note,
+    status: a.status,
+    requested_by: a.requested_by,
+  };
+}
+
+function createAppointment({ patientId, therapistId, startsAt, durationMin, note, status, requestedBy }) {
+  const info = db
+    .prepare(
+      `INSERT INTO appointments
+         (patient_id, therapist_id, starts_at, duration_min, note, status, requested_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(patientId, therapistId, dbTime(startsAt), durationMin, note, status, requestedBy, nowUtcForDb(), nowUtcForDb());
+  return getAppointment(Number(info.lastInsertRowid));
+}
+
+function getAppointment(id) {
+  return db.prepare(`${APPT_SELECT} WHERE a.id = ?`).get(id);
+}
+
+// A therapist's own appointments, or a patient's own. Soonest first.
+function listAppointments(role, userId) {
+  const column = role === 'therapist' ? 'a.therapist_id' : 'a.patient_id';
+  return db.prepare(`${APPT_SELECT} WHERE ${column} = ? ORDER BY a.starts_at, a.id`).all(userId);
+}
+
+// startsAt is only given when the time changes (rescheduling).
+function updateAppointment(id, { status, startsAt, requestedBy }) {
+  const a = getAppointment(id);
+  db.prepare('UPDATE appointments SET status = ?, starts_at = ?, requested_by = ?, updated_at = ? WHERE id = ?')
+    .run(status, startsAt ? dbTime(startsAt) : a.starts_at, requestedBy ?? a.requested_by, nowUtcForDb(), id);
+  return getAppointment(id);
+}
+
+// Is this person ('patient_id' or 'therapist_id') already booked at that time?
+function hasBookedOverlap(column, userId, startsAt, durationMin, excludeId = 0) {
+  if (column !== 'patient_id' && column !== 'therapist_id') throw new Error('bad column');
+  const marks = appointmentRules.BOOKED.map(() => '?').join(',');
+  return db
+    .prepare(`SELECT starts_at, duration_min FROM appointments
+              WHERE ${column} = ? AND id != ? AND status IN (${marks})`)
+    .all(userId, excludeId, ...appointmentRules.BOOKED)
+    .some((r) => appointmentRules.overlaps(utcIso(r.starts_at), r.duration_min, startsAt, durationMin));
+}
+
+// For the patient's "request an appointment" picker. Names only.
+function listTherapists() {
+  return db.prepare("SELECT id, name FROM users WHERE role = 'therapist' ORDER BY name COLLATE NOCASE").all();
+}
+
 // Keeps only the form faults we know about, as whole counts from 0 to 1000.
 // Returns null when nothing was sent (an older client), so "not recorded" stays
 // different from "recorded, no faults" ({}).
@@ -558,4 +644,6 @@ module.exports = {
   createInviteCode, createTherapistWithInvite, ROLES, listPatientSummaries,
   setPassword, setShareRecordings, getSession, setHasRecording, listExpiredRecordingIds, getPlanRows, setPlan, clearPlan, publicNote, addNote, listNotes, deleteNote,
   PLAN_MIN_REPS, PLAN_MAX_REPS, NOTE_MAX_LEN,
+  createAppointment, getAppointment, listAppointments, updateAppointment, hasBookedOverlap,
+  publicAppointment, listTherapists,
 };

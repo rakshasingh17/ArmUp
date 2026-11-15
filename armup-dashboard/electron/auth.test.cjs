@@ -417,3 +417,147 @@ test('koi chase: sessions can be saved, but it is not a prescribable exercise', 
   assert.equal(call('PUT', `/patients/${a.id}/plan`, { exercises: [{ key: 'koi', reps_per_set: 8 }] }, dr).status, 400);
   assert.ok(!call('GET', '/exercises', undefined, a.token).body.some((e) => e.key === 'koi'));
 });
+
+
+// ---------------------------------------------------------------
+// Appointments
+// ---------------------------------------------------------------
+const appts = require('./appointments.cjs');
+const inDays = (d, hour = 10) => {
+  const t = new Date(Date.now() + d * 86400000);
+  t.setUTCHours(hour, 0, 0, 0);
+  return t.toISOString();
+};
+const therapist = (name) => call('POST', '/users', { name, password: 'secret12', role: 'therapist', invite_code: db.createInviteCode(null) }).body;
+
+test('appointment rules: who can do what, in which status', () => {
+  assert.equal(appts.nextStatus('patient', 'scheduled', 'confirm'), 'confirmed');
+  assert.equal(appts.nextStatus('patient', 'requested', 'confirm'), null, 'a patient cannot confirm their own request');
+  assert.equal(appts.nextStatus('therapist', 'requested', 'approve'), 'confirmed');
+  assert.equal(appts.nextStatus('therapist', 'scheduled', 'approve'), null);
+  assert.equal(appts.nextStatus('patient', 'requested', 'approve'), null, 'patients cannot approve');
+  assert.equal(appts.nextStatus('therapist', 'confirmed', 'reschedule'), 'scheduled');
+  assert.equal(appts.nextStatus('patient', 'confirmed', 'reschedule'), 'requested');
+  for (const done of ['cancelled', 'declined', 'completed']) {
+    for (const role of ['patient', 'therapist']) {
+      for (const action of ['confirm', 'approve', 'decline', 'cancel', 'complete', 'reschedule']) {
+        assert.equal(appts.nextStatus(role, done, action), null, `${role} ${action} on ${done}`);
+      }
+    }
+  }
+});
+
+test('appointment rules: times, lengths, notes, overlaps', () => {
+  const now = new Date('2026-11-15T00:00:00Z');
+  assert.ok(appts.parseStart('2026-11-16T10:00:00Z', now).date);
+  assert.ok(appts.parseStart('2026-11-14T10:00:00Z', now).error, 'past');
+  assert.ok(appts.parseStart('not a date', now).error);
+  assert.ok(appts.parseStart(undefined, now).error);
+  assert.ok(appts.parseStart('2030-01-01T10:00:00Z', now).error, 'too far ahead');
+  assert.equal(appts.cleanDuration(undefined), 30);
+  assert.equal(appts.cleanDuration('45'), 45);
+  assert.equal(appts.cleanDuration(50), null);
+  assert.ok(appts.cleanNote('x'.repeat(301)).error);
+  assert.equal(appts.cleanNote('  hi  ').note, 'hi');
+  assert.equal(appts.overlaps('2026-11-20T10:00:00Z', 30, '2026-11-20T10:15:00Z', 30), true);
+  assert.equal(appts.overlaps('2026-11-20T10:00:00Z', 30, '2026-11-20T10:30:00Z', 30), false, 'back to back is fine');
+});
+
+test('appointments: therapist books, patient confirms, double-booking is refused', () => {
+  const dr = therapist('dr-appt-1');
+  const a = pat('appt-a');
+  const b = pat('appt-b');
+
+  // Only therapists can book for a patient; patients can't pick another patient.
+  assert.equal(call('POST', '/appointments', { patient_id: b.id, therapist_id: dr.id, starts_at: inDays(2) }, a.token).body.status, 'requested');
+  const booked = call('POST', '/appointments', { patient_id: a.id, starts_at: inDays(3), duration_min: 45, note: 'Bring your elbow brace' }, dr.token);
+  assert.equal(booked.status, 200);
+  assert.equal(booked.body.status, 'scheduled');
+  assert.equal(booked.body.requested_by, 'therapist');
+  assert.equal(booked.body.duration_min, 45);
+  assert.equal(booked.body.note, 'Bring your elbow brace');
+
+  // The same therapist cannot be booked twice at that time, by anyone.
+  assert.equal(call('POST', '/appointments', { patient_id: b.id, starts_at: inDays(3) }, dr.token).status, 409);
+  assert.equal(call('POST', '/appointments', { therapist_id: dr.id, starts_at: inDays(3) }, b.token).status, 409);
+
+  // The patient sees it and confirms; nobody else can touch it.
+  assert.equal(call('GET', '/appointments', undefined, a.token).body.filter((x) => x.id === booked.body.id).length, 1);
+  assert.equal(call('GET', '/appointments', undefined, b.token).body.some((x) => x.id === booked.body.id), false);
+  assert.equal(call('POST', `/appointments/${booked.body.id}/confirm`, {}, b.token).status, 404);
+  const confirmed = call('POST', `/appointments/${booked.body.id}/confirm`, {}, a.token);
+  assert.equal(confirmed.body.status, 'confirmed');
+  // Cannot confirm twice.
+  assert.equal(call('POST', `/appointments/${booked.body.id}/confirm`, {}, a.token).status, 409);
+});
+
+test('appointments: patient requests, therapist approves or declines', () => {
+  const dr = therapist('dr-appt-2');
+  const other = therapist('dr-appt-3');
+  const a = pat('appt-c');
+
+  assert.equal(call('POST', '/appointments', { therapist_id: a.id, starts_at: inDays(4) }, a.token).status, 404, 'not a therapist');
+  assert.equal(call('POST', '/appointments', { therapist_id: dr.id, starts_at: inDays(-1) }, a.token).status, 400, 'past');
+  assert.equal(call('POST', '/appointments', { therapist_id: dr.id, starts_at: inDays(4), duration_min: 50 }, a.token).status, 400);
+  assert.equal(call('POST', '/appointments', { therapist_id: dr.id }, a.token).status, 400, 'no time');
+
+  const req = call('POST', '/appointments', { therapist_id: dr.id, starts_at: inDays(4), note: 'Shoulder is stiff' }, a.token).body;
+  assert.equal(req.status, 'requested');
+  assert.equal(call('POST', `/appointments/${req.id}/approve`, {}, a.token).status, 409, 'patient cannot approve');
+  assert.equal(call('POST', `/appointments/${req.id}/approve`, {}, other.token).status, 404, 'another therapist cannot');
+  assert.equal(call('POST', `/appointments/${req.id}/approve`, {}, dr.token).body.status, 'confirmed');
+
+  const req2 = call('POST', '/appointments', { therapist_id: dr.id, starts_at: inDays(5) }, a.token).body;
+  assert.equal(call('POST', `/appointments/${req2.id}/decline`, {}, dr.token).body.status, 'declined');
+  assert.equal(call('POST', `/appointments/${req2.id}/cancel`, {}, a.token).status, 409, 'already closed');
+  // The declined slot is free again.
+  assert.equal(call('POST', '/appointments', { therapist_id: dr.id, starts_at: inDays(5) }, a.token).status, 200);
+
+  // Therapists only see their own appointments.
+  assert.equal(call('GET', '/appointments', undefined, other.token).body.length, 0);
+  assert.ok(call('GET', '/therapists', undefined, a.token).body.some((t) => t.id === dr.id));
+});
+
+test('appointments: rescheduling hands the decision to the other side', () => {
+  const dr = therapist('dr-appt-4');
+  const a = pat('appt-d');
+  const booked = call('POST', '/appointments', { patient_id: a.id, starts_at: inDays(6) }, dr.token).body;
+  call('POST', `/appointments/${booked.id}/confirm`, {}, a.token);
+
+  // Patient suggests a new time -> back to "requested", therapist must approve.
+  const moved = call('POST', `/appointments/${booked.id}/reschedule`, { starts_at: inDays(7) }, a.token).body;
+  assert.equal(moved.status, 'requested');
+  assert.equal(moved.requested_by, 'patient');
+  assert.equal(moved.starts_at.slice(0, 10), inDays(7).slice(0, 10));
+  assert.equal(call('POST', `/appointments/${booked.id}/reschedule`, { starts_at: inDays(-2) }, a.token).status, 400);
+  assert.equal(call('POST', `/appointments/${booked.id}/approve`, {}, dr.token).body.status, 'confirmed');
+
+  // Therapist moves it -> "scheduled", the patient must confirm again.
+  const moved2 = call('POST', `/appointments/${booked.id}/reschedule`, { starts_at: inDays(8) }, dr.token).body;
+  assert.equal(moved2.status, 'scheduled');
+  assert.equal(moved2.requested_by, 'therapist');
+  assert.equal(call('POST', `/appointments/${booked.id}/cancel`, {}, a.token).body.status, 'cancelled');
+});
+
+test('appointments: completing needs the start time to have passed', () => {
+  const dr = therapist('dr-appt-5');
+  const a = pat('appt-e');
+  const future = call('POST', '/appointments', { patient_id: a.id, starts_at: inDays(2) }, dr.token).body;
+  assert.equal(call('POST', `/appointments/${future.id}/complete`, {}, dr.token).status, 409);
+
+  const past = db.createAppointment({
+    patientId: a.id, therapistId: dr.id, startsAt: new Date(Date.now() - 86400000), durationMin: 30,
+    note: '', status: 'confirmed', requestedBy: 'therapist',
+  });
+  assert.equal(call('POST', `/appointments/${past.id}/complete`, {}, a.token).status, 409, 'patients cannot complete');
+  assert.equal(call('POST', `/appointments/${past.id}/complete`, {}, dr.token).body.status, 'completed');
+});
+
+test('appointments: need a login, and a therapist can only book real patients', () => {
+  assert.equal(call('GET', '/appointments').status, 401);
+  assert.equal(call('POST', '/appointments', { patient_id: 1, starts_at: inDays(2) }).status, 401);
+  const dr = therapist('dr-appt-6');
+  const other = therapist('dr-appt-7');
+  assert.equal(call('POST', '/appointments', { patient_id: other.id, starts_at: inDays(2) }, dr.token).status, 404, 'not a patient');
+  assert.equal(call('POST', '/appointments', { patient_id: 99999, starts_at: inDays(2) }, dr.token).status, 404);
+});
