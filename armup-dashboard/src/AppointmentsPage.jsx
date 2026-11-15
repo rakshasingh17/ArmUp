@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react';
 import { CalendarDays, Loader2 } from 'lucide-react';
 import { apiFetch } from './api';
+import { needsMe, countWaiting } from './appointmentUtils';
 
-// Appointments for both sides of ArmUp.
+// The Appointments page, for both sides of ArmUp. It has its own entry in the
+// left-hand menu.
 //
-//   role="patient"                 the patient's own list + "request an appointment"
-//   role="therapist" patient={p}   one patient's appointments + "book an appointment"
-//   role="therapist"               all of this therapist's appointments, requests first
+//   role="patient"     the patient's own appointments + "Request an appointment"
+//   role="therapist"   all of this therapist's appointments + "Book an appointment"
+//                      (the therapist picks one of their `patients`)
 //
 // A status of "requested" always means it is the THERAPIST's turn to answer;
 // "scheduled" means it is the PATIENT's turn to confirm. (Who may do what is
@@ -16,6 +18,7 @@ import { apiFetch } from './api';
 const MAX_NOTE = 300;
 const LENGTHS = [15, 30, 45, 60];
 const OPEN = ['requested', 'scheduled', 'confirmed'];
+const EARLIER_SHOWN = 10;
 
 function whenText(iso) {
   const d = new Date(iso);
@@ -41,9 +44,6 @@ async function errorText(res, fallback) {
   const body = await res.json().catch(() => null);
   return typeof body?.detail === 'string' ? body.detail : fallback;
 }
-
-const needsMe = (role, a) =>
-  (role === 'patient' && a.status === 'scheduled') || (role === 'therapist' && a.status === 'requested');
 
 function statusInfo(role, a) {
   switch (a.status) {
@@ -79,7 +79,7 @@ const LABELS = {
   cancel: 'Cancel', reschedule: 'Change time',
 };
 
-function Row({ a, role, showName, onAct }) {
+function Row({ a, role, onAct }) {
   const [mode, setMode] = useState(null); // null | 'reschedule' | 'sure:<action>'
   const [when, setWhen] = useState('');
   const [working, setWorking] = useState(false);
@@ -110,7 +110,7 @@ function Row({ a, role, showName, onAct }) {
         <div className="min-w-0">
           <p className="text-sm font-medium">{whenText(a.starts_at)}</p>
           <p className="text-xs text-[#8D8777] mt-0.5">
-            {a.duration_min} min{showName && who ? ` · ${who}` : ''}
+            {a.duration_min} min{who ? ` · ${who}` : ''}
           </p>
         </div>
         <span
@@ -188,20 +188,33 @@ function Row({ a, role, showName, onAct }) {
   );
 }
 
-export default function AppointmentsPanel({ role, patient = null }) {
+// The title of one block of appointments, with how many are in it.
+function GroupTitle({ children, count }) {
+  return (
+    <div className="flex items-center gap-2 mb-3">
+      <h2 className="font-display text-sm font-semibold">{children}</h2>
+      <span className="text-[11px] font-mono bg-[#F6F1E7] text-[#8D8777] px-2 py-0.5 rounded-full">{count}</span>
+    </div>
+  );
+}
+
+// `patients` is only used by therapists (the people they can book).
+// `preselectPatientId` opens the booking form for that patient.
+// `onWaitingChange(n)` tells the menu how many are waiting on this person.
+export default function AppointmentsPage({ role, patients = [], preselectPatientId = null, onWaitingChange }) {
   const [appts, setAppts] = useState(null); // null = still loading
   const [therapists, setTherapists] = useState([]);
   const [error, setError] = useState(null);
 
   // form
   const [therapistId, setTherapistId] = useState('');
+  const [patientId, setPatientId] = useState(preselectPatientId ? String(preselectPatientId) : '');
   const [when, setWhen] = useState('');
   const [minutes, setMinutes] = useState(30);
   const [note, setNote] = useState('');
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
 
-  const patientId = patient?.id; // a number, so it is safe in the dependency list below
   const [tick, setTick] = useState(0);
   const reload = () => setTick((t) => t + 1);
 
@@ -214,7 +227,9 @@ export default function AppointmentsPanel({ role, patient = null }) {
         return res.json();
       })
       .then((all) => {
-        if (alive) setAppts(patientId ? all.filter((a) => a.patient_id === patientId) : all);
+        if (!alive) return;
+        setAppts(all);
+        onWaitingChange?.(countWaiting(role, all));
       })
       .catch((err) => {
         console.error(err);
@@ -224,7 +239,9 @@ export default function AppointmentsPanel({ role, patient = null }) {
         }
       });
     return () => { alive = false; };
-  }, [patientId, tick]);
+    // onWaitingChange is deliberately left out: it only reports a number upwards.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [role, tick]);
 
   useEffect(() => {
     if (role !== 'patient') return;
@@ -264,7 +281,7 @@ export default function AppointmentsPanel({ role, patient = null }) {
     try {
       const payload = { starts_at: toIso(when), duration_min: minutes, note: note.trim() };
       if (role === 'patient') payload.therapist_id = Number(therapistId);
-      else payload.patient_id = patientId;
+      else payload.patient_id = Number(patientId);
       const res = await apiFetch('/appointments', { method: 'POST', body: JSON.stringify(payload) });
       if (!res.ok) {
         setError(await errorText(res, "Couldn't save the appointment. Please try again."));
@@ -282,80 +299,113 @@ export default function AppointmentsPanel({ role, patient = null }) {
     }
   };
 
-  const canBook = role === 'patient' || !!patient;
+  const isPatient = role === 'patient';
   const open = (appts || []).filter((a) => OPEN.includes(a.status));
-  // Requests waiting on this person come first.
-  const ordered = [...open].sort((a, b) => Number(needsMe(role, b)) - Number(needsMe(role, a)));
-  const earlier = (appts || []).filter((a) => !OPEN.includes(a.status)).reverse().slice(0, 5);
-  const waiting = open.filter((a) => needsMe(role, a)).length;
-  const showName = role === 'patient' || !patient;
+  const waitingOnMe = open.filter((a) => needsMe(role, a));
+  const otherOpen = open.filter((a) => !needsMe(role, a));
+  const earlier = (appts || []).filter((a) => !OPEN.includes(a.status)).reverse().slice(0, EARLIER_SHOWN);
+
+  const noPeople = isPatient ? therapists.length === 0 : patients.length === 0;
+  const canSend = !!when && !sending && (isPatient ? !!therapistId : !!patientId);
+  const fieldClass =
+    'block w-full mt-1 rounded-xl border border-[#E7E2D4] bg-[#FBF9F3] px-3 py-2 text-sm text-[#221E18] outline-none focus:border-[#17140F]';
 
   return (
-    <section className="bg-white border border-[#E7E2D4] rounded-3xl p-5 shadow-sm" aria-labelledby={`appts-${role}`}>
-      <div className="flex items-center justify-between mb-1">
-        <h2 id={`appts-${role}`} className="font-display font-semibold flex items-center gap-2">
-          <CalendarDays size={16} />
-          {patient ? `Appointments with ${patient.name}` : 'Appointments'}
-        </h2>
-        {waiting > 0 && (
-          <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-[#E8E2A8] text-[#6B6434]">
-            {waiting} waiting
-          </span>
-        )}
-      </div>
-      <p className="text-xs text-[#8D8777] mb-4">
-        {role === 'patient'
-          ? 'Your therapist can book a time for you, or you can request one.'
-          : patient
-            ? 'The patient confirms times you book. You approve times they request.'
-            : 'Requests from your patients appear here. Open a patient to book a time for them.'}
-      </p>
+    <>
+      <header className="mb-6">
+        <h1 className="font-display text-2xl md:text-3xl font-semibold tracking-tight flex items-center gap-3">
+          <CalendarDays size={26} />
+          Appointments
+        </h1>
+        <p className="text-sm text-[#8D8777] mt-1 max-w-xl">
+          {isPatient
+            ? 'Your therapist can book a time for you, or you can request one. Either of you can suggest a new time, and the other agrees to it.'
+            : 'Book a time for a patient and they confirm it, or approve the times they request. Either of you can suggest a new time, and the other agrees to it.'}
+        </p>
+      </header>
 
-      {appts === null ? (
-        <p className="text-sm text-[#8D8777] flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> Loading…</p>
-      ) : (
-        <>
-          <ul className="space-y-3">
-            {ordered.length === 0 && <li className="text-sm text-[#8D8777]">No upcoming appointments.</li>}
-            {ordered.map((a) => (
-              <Row key={`${a.id}-${a.status}-${a.starts_at}`} a={a} role={role} showName={showName} onAct={act} />
-            ))}
-          </ul>
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_24rem] gap-6 items-start">
+        {/* Appointment lists */}
+        <div className="space-y-6">
+          {appts === null ? (
+            <p className="text-sm text-[#8D8777] flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> Loading…</p>
+          ) : (
+            <>
+              {error && <p className="text-xs text-[#B15C7E] bg-[#F3D9E2] rounded-xl px-3 py-2">{error}</p>}
 
-          {earlier.length > 0 && (
-            <details className="mt-4">
-              <summary className="text-xs text-[#8D8777] cursor-pointer">Earlier ({earlier.length})</summary>
-              <ul className="space-y-3 mt-3">
-                {earlier.map((a) => (
-                  <Row key={`${a.id}-${a.status}`} a={a} role={role} showName={showName} onAct={act} />
-                ))}
-              </ul>
-            </details>
+              {waitingOnMe.length > 0 && (
+                <section className="bg-white border border-[#E7E2D4] rounded-3xl p-5 shadow-sm">
+                  <GroupTitle count={waitingOnMe.length}>{isPatient ? 'Please confirm' : 'Needs your reply'}</GroupTitle>
+                  <ul className="space-y-3">
+                    {waitingOnMe.map((a) => (
+                      <Row key={`${a.id}-${a.status}-${a.starts_at}`} a={a} role={role} onAct={act} />
+                    ))}
+                  </ul>
+                </section>
+              )}
+
+              <section className="bg-white border border-[#E7E2D4] rounded-3xl p-5 shadow-sm">
+                <GroupTitle count={otherOpen.length}>Upcoming</GroupTitle>
+                {otherOpen.length === 0 ? (
+                  <p className="text-sm text-[#8D8777]">
+                    {waitingOnMe.length > 0 ? 'Nothing else coming up.' : 'No upcoming appointments.'}
+                  </p>
+                ) : (
+                  <ul className="space-y-3">
+                    {otherOpen.map((a) => (
+                      <Row key={`${a.id}-${a.status}-${a.starts_at}`} a={a} role={role} onAct={act} />
+                    ))}
+                  </ul>
+                )}
+              </section>
+
+              {earlier.length > 0 && (
+                <section className="bg-white border border-[#E7E2D4] rounded-3xl p-5 shadow-sm">
+                  <details>
+                    <summary className="font-display text-sm font-semibold cursor-pointer">
+                      Earlier <span className="text-[11px] font-mono bg-[#F6F1E7] text-[#8D8777] px-2 py-0.5 rounded-full ml-1">{earlier.length}</span>
+                    </summary>
+                    <ul className="space-y-3 mt-3">
+                      {earlier.map((a) => (
+                        <Row key={`${a.id}-${a.status}`} a={a} role={role} onAct={act} />
+                      ))}
+                    </ul>
+                  </details>
+                </section>
+              )}
+            </>
           )}
-        </>
-      )}
+        </div>
 
-      {error && <p className="text-xs text-[#B15C7E] bg-[#F3D9E2] rounded-xl px-3 py-2 mt-4">{error}</p>}
+        {/* Booking form */}
+        <section className="bg-white border border-[#E7E2D4] rounded-3xl p-5 shadow-sm xl:sticky xl:top-6" aria-labelledby="appt-form-title">
+          <h2 id="appt-form-title" className="font-display font-semibold mb-4">
+            {isPatient ? 'Request an appointment' : 'Book an appointment'}
+          </h2>
 
-      {canBook && (
-        <div className="mt-5 pt-4 border-t border-[#F0EBDD]">
-          <p className="font-display text-sm font-medium mb-3">
-            {role === 'patient' ? 'Request an appointment' : 'Book an appointment'}
-          </p>
-
-          {role === 'patient' && therapists.length === 0 ? (
-            <p className="text-xs text-[#8D8777]">No therapists are on ArmUp yet.</p>
+          {noPeople ? (
+            <p className="text-xs text-[#8D8777]">
+              {isPatient ? 'No therapists are on ArmUp yet.' : 'No patients have signed up yet.'}
+            </p>
           ) : (
             <div className="space-y-3">
-              {role === 'patient' && (
+              {isPatient ? (
                 <label className="block text-xs text-[#8D8777]">
                   Therapist
-                  <select
-                    value={therapistId}
-                    onChange={(e) => setTherapistId(e.target.value)}
-                    className="block w-full mt-1 rounded-xl border border-[#E7E2D4] bg-[#FBF9F3] px-3 py-2 text-sm text-[#221E18] outline-none focus:border-[#17140F]"
-                  >
+                  <select value={therapistId} onChange={(e) => setTherapistId(e.target.value)} className={fieldClass}>
                     {therapists.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </select>
+                </label>
+              ) : (
+                <label className="block text-xs text-[#8D8777]">
+                  Patient
+                  <select
+                    value={patientId}
+                    onChange={(e) => { setPatientId(e.target.value); setSent(false); }}
+                    className={fieldClass}
+                  >
+                    <option value="">Choose a patient…</option>
+                    {patients.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                   </select>
                 </label>
               )}
@@ -367,7 +417,7 @@ export default function AppointmentsPanel({ role, patient = null }) {
                     value={when}
                     min={pickerMin()}
                     onChange={(e) => { setWhen(e.target.value); setSent(false); }}
-                    className="block w-full mt-1 rounded-xl border border-[#E7E2D4] bg-[#FBF9F3] px-3 py-2 text-sm text-[#221E18] outline-none focus:border-[#17140F]"
+                    className={fieldClass}
                   />
                 </label>
                 <label className="block text-xs text-[#8D8777]">
@@ -387,26 +437,28 @@ export default function AppointmentsPanel({ role, patient = null }) {
                   value={note}
                   onChange={(e) => setNote(e.target.value)}
                   maxLength={MAX_NOTE}
-                  rows={2}
-                  placeholder={role === 'patient' ? 'e.g. My shoulder feels tighter this week' : 'e.g. Bring your elbow brace'}
-                  className="block w-full mt-1 rounded-xl border border-[#E7E2D4] bg-[#FBF9F3] px-3 py-2 text-sm text-[#221E18] outline-none focus:border-[#17140F] resize-none"
+                  rows={3}
+                  placeholder={isPatient ? 'e.g. My shoulder feels tighter this week' : 'e.g. Bring your elbow brace'}
+                  className={`${fieldClass} resize-none`}
                 />
               </label>
               <div className="flex items-center justify-between">
-                <span className="text-[11px] text-[#B7B1A0]">{sent ? (role === 'patient' ? 'Request sent.' : 'Booked. The patient will see it.') : ''}</span>
+                <span className="text-[11px] text-[#8D8777]">
+                  {sent ? (isPatient ? 'Request sent.' : 'Booked. The patient will see it.') : ''}
+                </span>
                 <button
                   onClick={submit}
-                  disabled={!when || sending || (role === 'patient' && !therapistId)}
+                  disabled={!canSend}
                   className="flex items-center gap-2 bg-[#17140F] text-[#E9E4D6] text-sm font-medium px-4 py-2 rounded-xl disabled:opacity-40"
                 >
                   {sending && <Loader2 size={14} className="animate-spin" />}
-                  {role === 'patient' ? 'Send request' : 'Book'}
+                  {isPatient ? 'Send request' : 'Book'}
                 </button>
               </div>
             </div>
           )}
-        </div>
-      )}
-    </section>
+        </section>
+      </div>
+    </>
   );
 }

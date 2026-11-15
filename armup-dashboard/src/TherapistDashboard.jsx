@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
-import { Users, LogOut, ArrowLeft, Loader2, Activity, Target, Flame, ClipboardList, ShieldAlert, Play } from 'lucide-react';
+import { Users, LogOut, ArrowLeft, Loader2, Activity, Target, Flame, ClipboardList, ShieldAlert, Play, CalendarDays } from 'lucide-react';
 import BrandMark from './BrandMark.jsx';
 import { apiFetch } from './api';
 import InviteCodeButton from './InviteCodeButton';
 import NotesCard from './NotesCard';
 import PlanEditor from './PlanEditor';
-import AppointmentsPanel from './AppointmentsPanel';
+import AppointmentsPage from './AppointmentsPage';
+import { countWaiting } from './appointmentUtils';
 import RecordingPlayer from './RecordingPlayer';
 
 // Therapist home. Separate from the patient dashboard: no camera, no
@@ -47,6 +48,9 @@ export default function TherapistDashboard({ userId, onExit }) {
   const [listError, setListError] = useState(null);
 
   const [selected, setSelected] = useState(null); // { id, name, loading, error, sessions }
+  const [view, setView] = useState('patients'); // 'patients' | 'appointments'
+  const [bookFor, setBookFor] = useState(null); // patient to pre-fill on the Appointments page
+  const [waiting, setWaiting] = useState(0); // requests waiting for this therapist's answer
 
   useEffect(() => {
     apiFetch(`/users/${userId}`)
@@ -64,7 +68,21 @@ export default function TherapistDashboard({ userId, onExit }) {
         setListError("Couldn't load your patients. Please close and reopen the app.");
         setPatients([]);
       });
+    // Starting count for the badge on the Appointments menu item.
+    apiFetch('/appointments')
+      .then((r) => (r.ok ? r.json() : []))
+      .then((list) => setWaiting(countWaiting('therapist', list)))
+      .catch(() => {});
   }, [userId]);
+
+  const showPatients = () => {
+    setSelected(null);
+    setView('patients');
+  };
+  const showAppointments = (patientId = null) => {
+    setBookFor(patientId);
+    setView('appointments');
+  };
 
   const openPatient = async (patient) => {
     const base = { id: patient.id, name: patient.name, sessions: [], notes: [], plan: null };
@@ -104,13 +122,31 @@ export default function TherapistDashboard({ userId, onExit }) {
             <span className="font-display text-xl font-semibold tracking-tight">ArmUp</span>
           </div>
           <p className="text-[11px] uppercase tracking-wide text-[#8D8777] mb-3 px-1">Therapist</p>
-          <button
-            onClick={() => setSelected(null)}
-            className="w-full font-display flex items-center gap-3 px-3 py-2 rounded-xl text-sm bg-[#E9E4D6] text-[#17140F] font-medium text-left"
-          >
-            <Users size={16} />
-            Patients
-          </button>
+          <nav className="space-y-1">
+            {[
+              { id: 'patients', label: 'Patients', icon: Users, onClick: showPatients },
+              { id: 'appointments', label: 'Appointments', icon: CalendarDays, onClick: () => showAppointments() },
+            ].map(({ id, label, icon: Icon, onClick }) => (
+              <button
+                key={id}
+                onClick={onClick}
+                aria-current={view === id ? 'page' : undefined}
+                className={`w-full font-display flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-left transition-colors ${
+                  view === id
+                    ? 'bg-[#E9E4D6] text-[#17140F] font-medium'
+                    : 'text-[#B7B1A0] hover:bg-white/5 hover:text-[#E9E4D6]'
+                }`}
+              >
+                <Icon size={16} />
+                {label}
+                {id === 'appointments' && waiting > 0 && (
+                  <span className="ml-auto text-[10px] font-medium px-2 py-0.5 rounded-full bg-[#E8E2A8] text-[#6B6434]">
+                    {waiting}
+                  </span>
+                )}
+              </button>
+            ))}
+          </nav>
         </div>
 
         <div>
@@ -126,10 +162,24 @@ export default function TherapistDashboard({ userId, onExit }) {
       </aside>
 
       <main className="flex-1 p-4 md:p-8">
-        {!selected ? (
+        {view === 'appointments' ? (
+          <AppointmentsPage
+            key={bookFor ?? 'all'}
+            role="therapist"
+            patients={patients || []}
+            preselectPatientId={bookFor}
+            onWaitingChange={setWaiting}
+          />
+        ) : !selected ? (
           <PatientList me={me} patients={patients} error={listError} onOpen={openPatient} />
         ) : (
-          <PatientDetail selected={selected} summary={selectedSummary} therapistId={userId} onBack={() => setSelected(null)} />
+          <PatientDetail
+            selected={selected}
+            summary={selectedSummary}
+            therapistId={userId}
+            onBack={() => setSelected(null)}
+            onBook={() => showAppointments(selected.id)}
+          />
         )}
       </main>
     </div>
@@ -149,10 +199,6 @@ function PatientList({ me, patients, error, onOpen }) {
             : `${patients.length} patient${patients.length === 1 ? '' : 's'} on ArmUp. Select one to review their progress.`}
         </p>
       </header>
-
-      <div className="max-w-xl mb-6">
-        <AppointmentsPanel role="therapist" />
-      </div>
 
       {error && <p className="text-xs text-[#B15C7E] bg-[#F3D9E2] rounded-xl px-3 py-2 mb-4 inline-block">{error}</p>}
 
@@ -200,7 +246,7 @@ function PatientList({ me, patients, error, onOpen }) {
   );
 }
 
-function PatientDetail({ selected, summary, therapistId, onBack }) {
+function PatientDetail({ selected, summary, therapistId, onBack, onBook }) {
   const { sessions } = selected;
   const totalReps = sessions.reduce((a, s) => a + s.reps, 0);
   // Koi chase has no misses (saved as 100%), so it doesn't count toward form accuracy.
@@ -247,9 +293,18 @@ function PatientDetail({ selected, summary, therapistId, onBack }) {
       </button>
 
       <header className="mb-6">
-        <h1 className="font-display text-2xl md:text-3xl font-semibold tracking-tight">
-          {selected.name}'s progress
-        </h1>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h1 className="font-display text-2xl md:text-3xl font-semibold tracking-tight">
+            {selected.name}'s progress
+          </h1>
+          <button
+            onClick={onBook}
+            className="font-display flex items-center gap-2 text-sm px-4 py-2 rounded-full bg-white border border-[#E7E2D4] text-[#6B5B45] hover:border-[#17140F] transition-colors"
+          >
+            <CalendarDays size={16} />
+            Book appointment
+          </button>
+        </div>
         {summary && summary.ailment_tags.length > 0 && (
           <div className="flex flex-wrap gap-2 mt-3">
             {summary.ailment_tags.map((t) => (
@@ -343,11 +398,6 @@ function PatientDetail({ selected, summary, therapistId, onBack }) {
               patientId={selected.id}
               therapistId={therapistId}
               initialNotes={selected.notes}
-            />
-            <AppointmentsPanel
-              key={`appts-${selected.id}`}
-              role="therapist"
-              patient={{ id: selected.id, name: selected.name }}
             />
           </div>
         </>

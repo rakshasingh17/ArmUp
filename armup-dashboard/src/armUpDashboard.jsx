@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Activity, Award, CheckCircle2, Flame, LayoutDashboard,
+  Activity, Award, CalendarDays, CheckCircle2, Flame, LayoutDashboard,
   ClipboardList, Settings, LogOut, Play, ShieldAlert, User
 } from 'lucide-react';
 import BrandMark from './BrandMark.jsx';
@@ -9,7 +9,8 @@ import ExerciseCanvas from './ExerciseCanvas';
 import KoiCanvas from './KoiCanvas';
 import RecordingConsent from './RecordingConsent';
 import SettingsPanel from './SettingsPanel';
-import AppointmentsPanel from './AppointmentsPanel';
+import AppointmentsPage from './AppointmentsPage';
+import { countWaiting } from './appointmentUtils';
 import { loadSettings, saveSettings, applySettings, clearSettings } from './displaySettings';
 import { usePoseSession } from './usePoseSession';
 import { apiFetch } from './api';
@@ -46,9 +47,11 @@ function formatIST(ts) {
   });
 }
 
+// `view` items switch the page; the others do something else when clicked.
 const NAV_ITEMS = [
-  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, active: true },
-  { id: 'session-log', label: 'Session log', icon: ClipboardList, href: '#session-log' },
+  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, view: 'dashboard' },
+  { id: 'appointments', label: 'Appointments', icon: CalendarDays, view: 'appointments' },
+  { id: 'session-log', label: 'Session log', icon: ClipboardList, scrollsToLog: true },
   { id: 'settings', label: 'Settings', icon: Settings, opensSettings: true },
 ];
 
@@ -63,6 +66,10 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
   const [loading, setLoading] = useState(true);
   const [mode, setMode] = useState('exercise'); // 'exercise' | 'game' | 'koi'
   const [showSettings, setShowSettings] = useState(false);
+  // Which page is showing. The dashboard stays mounted (just hidden) while
+  // Appointments is open, so the camera session is not reset.
+  const [view, setView] = useState('dashboard'); // 'dashboard' | 'appointments'
+  const [waiting, setWaiting] = useState(0); // appointments waiting for this patient to confirm
   const [display, setDisplay] = useState(() => loadSettings(initialUserId));
 
   // Apply this patient's text-size / contrast choices while the dashboard
@@ -84,6 +91,20 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
   useEffect(() => {
     fetchDashboardData(userId);
   }, [userId]);
+
+  // Starting count for the badge on the Appointments menu item.
+  useEffect(() => {
+    apiFetch('/appointments')
+      .then((r) => (r.ok ? r.json() : []))
+      .then((list) => setWaiting(countWaiting('patient', list)))
+      .catch(() => {});
+  }, [userId]);
+
+  // "Session log" lives on the dashboard page, so go there first if needed.
+  const goToSessionLog = () => {
+    setView('dashboard');
+    setTimeout(() => document.getElementById('session-log')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0);
+  };
 
   const fetchDashboardData = async (id) => {
     setLoading(true);
@@ -178,52 +199,28 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
 
           <p className="px-2 text-[11px] uppercase tracking-wide text-[#8D8777] mb-2">General</p>
           <nav className="space-y-1">
-            {NAV_ITEMS.map(({ id, label, icon: Icon, active, href, opensSettings }) => {
-              if (active) {
-                return (
-                  <div
-                    key={id}
-                    className="font-display flex items-center gap-3 px-3 py-2 rounded-xl text-sm bg-[#E9E4D6] text-[#17140F] font-medium"
-                  >
-                    <Icon size={16} />
-                    {label}
-                  </div>
-                );
-              }
-              if (href) {
-                return (
-                  <a
-                    key={id}
-                    href={href}
-                    className="font-display flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-[#B7B1A0] hover:bg-white/5 hover:text-[#E9E4D6] transition-colors"
-                  >
-                    <Icon size={16} />
-                    {label}
-                  </a>
-                );
-              }
-              if (opensSettings) {
-                return (
-                  <button
-                    key={id}
-                    onClick={() => setShowSettings(true)}
-                    className="w-full text-left font-display flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-[#B7B1A0] hover:bg-white/5 hover:text-[#E9E4D6] transition-colors"
-                  >
-                    <Icon size={16} />
-                    {label}
-                  </button>
-                );
-              }
+            {NAV_ITEMS.map(({ id, label, icon: Icon, view: target, scrollsToLog, opensSettings }) => {
+              const current = target && view === target;
+              const onClick = target ? () => setView(target) : scrollsToLog ? goToSessionLog : opensSettings ? () => setShowSettings(true) : undefined;
               return (
-                <div
+                <button
                   key={id}
-                  title="Not built yet"
-                  className="font-display flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-[#5C574A] cursor-not-allowed"
+                  onClick={onClick}
+                  aria-current={current ? 'page' : undefined}
+                  className={`w-full text-left font-display flex items-center gap-3 px-3 py-2 rounded-xl text-sm transition-colors ${
+                    current
+                      ? 'bg-[#E9E4D6] text-[#17140F] font-medium'
+                      : 'text-[#B7B1A0] hover:bg-white/5 hover:text-[#E9E4D6]'
+                  }`}
                 >
                   <Icon size={16} />
                   {label}
-                  <span className="ml-auto text-[9px] uppercase tracking-wide text-[#5C574A]">Soon</span>
-                </div>
+                  {id === 'appointments' && waiting > 0 && (
+                    <span className="ml-auto text-[10px] font-medium px-2 py-0.5 rounded-full bg-[#E8E2A8] text-[#6B6434]">
+                      {waiting}
+                    </span>
+                  )}
+                </button>
               );
             })}
           </nav>
@@ -251,6 +248,29 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
 
       {/* Main content */}
       <main className="flex-1 p-4 md:p-8">
+
+        {/* The side menu is hidden on narrow windows, so show the two pages as tabs. */}
+        <div className="lg:hidden flex items-center gap-2 mb-4">
+          {[
+            { id: 'dashboard', label: 'Dashboard' },
+            { id: 'appointments', label: 'Appointments' },
+          ].map(({ id, label }) => (
+            <button
+              key={id}
+              onClick={() => setView(id)}
+              className={`font-display text-sm px-4 py-2 rounded-full transition-colors ${
+                view === id ? 'bg-[#17140F] text-[#E9E4D6]' : 'bg-white border border-[#E7E2D4] text-[#8D8777]'
+              }`}
+            >
+              {label}
+              {id === 'appointments' && waiting > 0 ? ` (${waiting})` : ''}
+            </button>
+          ))}
+        </div>
+
+        {view === 'appointments' && <AppointmentsPage role="patient" onWaitingChange={setWaiting} />}
+
+        <div className={view === 'appointments' ? 'hidden' : ''}>
 
         {/* Header */}
         <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
@@ -497,8 +517,6 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
               onChange={(v) => setUser((u) => (u ? { ...u, share_recordings: v } : u))}
             />
 
-            <AppointmentsPanel role="patient" />
-
             <div className="bg-white border border-[#E7E2D4] rounded-3xl p-5 shadow-sm">
               <p className="text-[11px] uppercase tracking-wide text-[#8D8777] mb-4">From your therapist</p>
               {notes.length > 0 ? (
@@ -558,6 +576,7 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
               </div>
             </div>
           </div>
+        </div>
         </div>
       </main>
     </div>
