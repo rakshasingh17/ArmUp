@@ -1,17 +1,13 @@
 /*
  * main.cjs -- Electron main process
  * ---------------------------------
- * Opens the window, opens the SQLite database in the app's own data folder,
- * and answers the React app's "API calls" over IPC (no HTTP server, no port).
+ * Opens the window and passes the React app's "API calls" (over IPC) on to
+ * the ArmUp server over HTTPS. Accounts, appointments and notes live in the
+ * server's database; the camera and pose tracking stay on this computer.
  */
 const { app, BrowserWindow, ipcMain, session } = require('electron');
 const path = require('node:path');
-const db = require('./db.cjs');
-const auth = require('./auth.cjs');
-const recordings = require('./recordings.cjs');
-const { handleRequest } = require('./routes.cjs');
-
-const isDev = !app.isPackaged;
+const { createServerClient } = require('./server-client.cjs');
 
 const ICON_PATH = path.join(__dirname, 'assets', 'icon.png');
 const SPLASH_MIN_MS = 1600;   // keep the splash up long enough to be seen
@@ -93,25 +89,20 @@ app.whenReady().then(async () => {
   await splash.loadFile(path.join(__dirname, 'splash.html'));
   const splashShownAt = Date.now();
 
-  // Database lives in the per-user data folder, so it survives app updates.
-  const dbPath = path.join(app.getPath('userData'), 'armup.db');
-  db.openDb(dbPath, {
-    // Dev only: carry over the old Python database on the very first run.
-    legacyDbPath: isDev ? path.join(__dirname, '..', '..', 'backend', 'armup.db') : null,
+  // Where the server is: the address saved in the app, or the shipped default.
+  const server = createServerClient({
+    userDataDir: app.getPath('userData'),
+    defaultConfigPath: path.join(__dirname, 'server-config.json'),
   });
-  console.log('[armup] database:', dbPath);
-  // Token-signing secret: created on first run, kept next to the database.
-  auth.initAuth(path.join(app.getPath('userData'), 'jwt-secret.key'));
-  // Set recordings, and the clean-up of ones older than the retention period.
-  recordings.initRecordings(path.join(app.getPath('userData'), 'recordings'));
-  for (const id of db.listExpiredRecordingIds(recordings.RETENTION_DAYS)) {
-    recordings.removeRecording(id);
-    db.setHasRecording(id, false);
-  }
+  console.log('[armup] server:', server.getUrl() || '(no address set)');
 
   ipcMain.handle('api:request', (_event, method, apiPath, body, token) =>
-    handleRequest(String(method).toUpperCase(), String(apiPath), body, token)
+    server.forward(String(method), String(apiPath), body, token)
   );
+  // The connection box in the app: read, change, and check the server address.
+  ipcMain.handle('server:get', () => server.getUrl());
+  ipcMain.handle('server:set', (_event, address) => server.setUrl(String(address ?? '')));
+  ipcMain.handle('server:ping', () => server.ping());
 
   // Camera only. Everything else the page asks for is refused.
   session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) =>

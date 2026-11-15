@@ -4,6 +4,7 @@ import SignupPage from './SignupPage';
 import LoginPage from './LoginPage';
 import ArmUpDashboard from './armUpDashboard';
 import TherapistDashboard from './TherapistDashboard';
+import ServerStatus from './ServerStatus';
 import { apiFetch, setAuthToken, setUnauthorizedHandler } from './api';
 
 // Where the app starts before anyone has logged in (never shown as a real user).
@@ -80,31 +81,46 @@ export default function App() {
     setDemoError(null);
     try {
       const res = await apiFetch('/demo-login', { method: 'POST', body: '{}' });
-      if (!res.ok) throw new Error(`Demo login failed (${res.status})`);
-      openDashboard(await res.json(), true);
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        // 404 = the server has the demo account switched off; 503 = can't reach it.
+        setDemoError(
+          res.status === 404
+            ? 'The demo account is not available on this server. Please log in or sign up.'
+            : typeof data?.detail === 'string' ? data.detail : "Couldn't open the demo account."
+        );
+        return;
+      }
+      openDashboard(data, true);
     } catch (err) {
       console.error(err);
-      setDemoError("Couldn't open the demo account. Please close and reopen the app.");
+      setDemoError("Couldn't open the demo account.");
     }
   };
 
   if (screen === 'signup') {
     return (
-      <SignupPage
-        onBack={() => setScreen('landing')}
-        onLogin={() => setScreen('login')}
-        onCreated={(user) => openDashboard(user)}
-      />
+      <>
+        <SignupPage
+          onBack={() => setScreen('landing')}
+          onLogin={() => setScreen('login')}
+          onCreated={(user) => openDashboard(user)}
+        />
+        <ServerStatus />
+      </>
     );
   }
 
   if (screen === 'login') {
     return (
-      <LoginPage
-        onBack={() => setScreen('landing')}
-        onSignup={() => setScreen('signup')}
-        onLoggedIn={(user) => openDashboard(user)}
-      />
+      <>
+        <LoginPage
+          onBack={() => setScreen('landing')}
+          onSignup={() => setScreen('signup')}
+          onLoggedIn={(user) => openDashboard(user)}
+        />
+        <ServerStatus />
+      </>
     );
   }
 
@@ -122,11 +138,14 @@ export default function App() {
   }
 
   return (
-    <LandingPage
-      onGetStarted={() => setScreen('signup')}
-      onLogin={() => setScreen('login')}
-      onDemo={startDemo}
-      demoError={demoError}
-    />
+    <>
+      <LandingPage
+        onGetStarted={() => setScreen('signup')}
+        onLogin={() => setScreen('login')}
+        onDemo={startDemo}
+        demoError={demoError}
+      />
+      <ServerStatus />
+    </>
   );
 }

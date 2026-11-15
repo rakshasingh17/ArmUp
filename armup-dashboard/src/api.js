@@ -1,14 +1,15 @@
 /*
  * api.js
  * ------
- * apiFetch() looks like fetch(), but instead of calling a web server it
- * asks the Electron main process (window.armup, set up in electron/preload.cjs).
+ * apiFetch() looks like fetch(), but it goes through the Electron main process
+ * (window.armup, set up in electron/preload.cjs), which sends the call to the
+ * ArmUp server over HTTPS (electron/server-client.cjs).
  * It returns a real Response object, so the pages keep using
  * res.ok / res.json() exactly as before.
  *
  * Login: after /login or /users the page keeps the returned token with
  * setAuthToken(). apiFetch then attaches it to every call, and the main
- * process checks it. If the main process says the token is no longer valid
+ * process checks it. If the server says the token is no longer valid
  * (expired, account removed), the handler set with setUnauthorizedHandler()
  * runs so the app can send the user back to the login screen.
  */

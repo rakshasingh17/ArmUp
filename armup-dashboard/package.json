@@ -16,7 +16,6 @@
     "@fontsource/inter": "^5.3.0",
     "@fontsource/outfit": "^5.3.0",
     "@mediapipe/tasks-vision": "^0.10.14",
-    "better-sqlite3": "^13.1.1",
     "lucide-react": "^1.43.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
@@ -46,7 +45,7 @@
   "build": {
     "appId": "edu.umit.armup",
     "productName": "ArmUp",
-     "npmRebuild": false,
+    "npmRebuild": false,
     "files": [
       "dist/**/*",
       "electron/**/*",

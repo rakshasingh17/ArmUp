@@ -7,7 +7,6 @@ import BrandMark from './BrandMark.jsx';
 import GameCanvas from './GameCanvas';
 import ExerciseCanvas from './ExerciseCanvas';
 import KoiCanvas from './KoiCanvas';
-import RecordingConsent from './RecordingConsent';
 import SettingsPanel from './SettingsPanel';
 import AppointmentsPage from './AppointmentsPage';
 import { countWaiting } from './appointmentUtils';
@@ -339,7 +338,7 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
             of the dashboard layout. */}
         <div id="exercise-stage" className="mb-8 scroll-mt-6">
           {mode === 'exercise' ? (
-            <ExerciseCanvas pose={pose} userId={userId} plan={recommended} recordingConsent={!!user?.share_recordings} onSessionSaved={() => fetchDashboardData(userId)} />
+            <ExerciseCanvas pose={pose} userId={userId} plan={recommended} onSessionSaved={() => fetchDashboardData(userId)} />
           ) : mode === 'koi' ? (
             <KoiCanvas pose={pose} userId={userId} onSessionSaved={() => fetchDashboardData(userId)} />
           ) : (
@@ -510,12 +509,6 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
                 )}
               </div>
             </div>
-
-            <RecordingConsent
-              userId={userId}
-              allowed={!!user?.share_recordings}
-              onChange={(v) => setUser((u) => (u ? { ...u, share_recordings: v } : u))}
-            />
 
             <div className="bg-white border border-[#E7E2D4] rounded-3xl p-5 shadow-sm">
               <p className="text-[11px] uppercase tracking-wide text-[#8D8777] mb-4">From your therapist</p>
