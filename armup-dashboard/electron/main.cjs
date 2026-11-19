@@ -5,9 +5,10 @@
  * the ArmUp server over HTTPS. Accounts, appointments and notes live in the
  * server's database; the camera and pose tracking stay on this computer.
  */
-const { app, BrowserWindow, ipcMain, session } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, session } = require('electron');
 const path = require('node:path');
 const { createServerClient } = require('./server-client.cjs');
+const { registerPdfExport } = require('./pdf-export.cjs');
 
 const ICON_PATH = path.join(__dirname, 'assets', 'icon.png');
 const SPLASH_MIN_MS = 1600;   // keep the splash up long enough to be seen
@@ -103,6 +104,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('server:get', () => server.getUrl());
   ipcMain.handle('server:set', (_event, address) => server.setUrl(String(address ?? '')));
   ipcMain.handle('server:ping', () => server.ping());
+  // Save a patient's progress summary as a PDF.
+  registerPdfExport({ ipcMain, dialog, BrowserWindow });
 
   // Camera only. Everything else the page asks for is refused.
   session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) =>

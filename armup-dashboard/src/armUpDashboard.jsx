@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   Activity, Award, CalendarDays, CheckCircle2, Flame, LayoutDashboard,
-  ClipboardList, Settings, LogOut, Play, ShieldAlert, User
+  ClipboardList, Download, Settings, LogOut, Play, ShieldAlert, User
 } from 'lucide-react';
 import BrandMark from './BrandMark.jsx';
 import GameCanvas from './GameCanvas';
@@ -13,6 +13,7 @@ import { countWaiting } from './appointmentUtils';
 import { loadSettings, saveSettings, applySettings, clearSettings } from './displaySettings';
 import { usePoseSession } from './usePoseSession';
 import { apiFetch } from './api';
+import { buildReportHtml, reportFileName } from './reportPdf';
 
 
 // Pastel palette per exercise -- soft card tints + a darker "ink" shade
@@ -65,6 +66,7 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
   const [loading, setLoading] = useState(true);
   const [mode, setMode] = useState('exercise'); // 'exercise' | 'game' | 'koi'
   const [showSettings, setShowSettings] = useState(false);
+  const [pdfState, setPdfState] = useState({ busy: false, message: null }); // "Download my report"
   // Which page is showing. The dashboard stays mounted (just hidden) while
   // Appointments is open, so the camera session is not reset.
   const [view, setView] = useState('dashboard'); // 'dashboard' | 'appointments'
@@ -103,6 +105,27 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
   const goToSessionLog = () => {
     setView('dashboard');
     setTimeout(() => document.getElementById('session-log')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0);
+  };
+
+  // Save the patient's progress summary as a PDF (printed by the main process).
+  const downloadReport = async () => {
+    if (pdfState.busy) return;
+    if (!window.armup?.report) {
+      setPdfState({ busy: false, message: 'PDF export is only available in the desktop app.' });
+      return;
+    }
+    setPdfState({ busy: true, message: null });
+    try {
+      const html = buildReportHtml({ user, sessions, notes, plan: recommended });
+      const res = await window.armup.report.savePdf(html, reportFileName(user));
+      setPdfState({
+        busy: false,
+        message: res?.canceled ? null : res?.ok ? 'Report saved.' : (res?.error || 'Could not create the PDF.'),
+      });
+    } catch (err) {
+      console.error('PDF export failed:', err);
+      setPdfState({ busy: false, message: 'Could not create the PDF.' });
+    }
   };
 
   const fetchDashboardData = async (id) => {
@@ -425,9 +448,24 @@ export default function ArmUpDashboard({ initialUserId = 1, onExit } = {}) {
 
           {/* Session log */}
           <div id="session-log" className="lg:col-span-2 bg-white border border-[#E7E2D4] rounded-3xl p-6 shadow-sm scroll-mt-6">
-            <div className="mb-5">
-              <h3 className="font-display text-lg font-semibold">Session log</h3>
-              <p className="text-xs text-[#8D8777]">Logged directly from the webcam vision layer</p>
+            <div className="mb-5 flex items-start justify-between gap-3">
+              <div>
+                <h3 className="font-display text-lg font-semibold">Session log</h3>
+                <p className="text-xs text-[#8D8777]">Logged directly from the webcam vision layer</p>
+              </div>
+              <div className="flex flex-col items-end gap-1">
+                <button
+                  onClick={downloadReport}
+                  disabled={pdfState.busy || sessions.length === 0}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#221E18] text-white text-xs font-medium hover:bg-[#3a342b] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  <Download size={14} />
+                  {pdfState.busy ? 'Preparing…' : 'Download my report (PDF)'}
+                </button>
+                {pdfState.message && (
+                  <p className="text-[11px] text-[#8D8777]" role="status">{pdfState.message}</p>
+                )}
+              </div>
             </div>
 
             {sessions.length > 0 ? (

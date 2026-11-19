@@ -11,4 +11,9 @@ contextBridge.exposeInMainWorld('armup', {
     set: (address) => ipcRenderer.invoke('server:set', address),
     ping: () => ipcRenderer.invoke('server:ping'),
   },
+  // "Download my report (PDF)": hands finished HTML to the main process, which
+  // prints it to PDF and asks where to save it.
+  report: {
+    savePdf: (html, suggestedName) => ipcRenderer.invoke('report:savePdf', html, suggestedName),
+  },
 });
